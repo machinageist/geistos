@@ -47,10 +47,9 @@ Seven repositories, six of them Rust applications and one config tree.
 
 These are the things that will actually bite, in rough order of severity.
 
-**No repository has a LICENSE file.** `mg-brief` and `mg-plan` declare MIT in
-their manifests; the other four declare nothing, and `mg-vaultr`'s own packaging
-spec records an open MIT-versus-Apache-2.0 question. Unlicensed code is not
-distributable. This blocks packaging outright and is a decision, not a task.
+**Licensing is settled: MIT.** Every repository carries a `LICENSE` file and
+declares `MIT` in its manifest. `mg-vaultr`'s packaging spec still describes the
+MIT-versus-Apache-2.0 question as open; that spec predates the decision.
 
 **The package must not provision PostgreSQL.** `mg-calr init` deliberately
 diagnoses only — it never runs `sudo`, creates a role or database, or applies

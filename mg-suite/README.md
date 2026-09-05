@@ -170,7 +170,5 @@ reference and receipt path.
 
 ## License
 
-Not yet settled. `mg-brief` and `mg-plan` declare MIT in their manifests; the
-remaining crates declare nothing, and the packaging specs record an open
-MIT-versus-Apache-2.0 question. Treat every repository as all rights reserved until
-a `LICENSE` file lands.
+MIT. Every repository in the suite carries a `LICENSE` file and declares `MIT` in
+its manifest.
