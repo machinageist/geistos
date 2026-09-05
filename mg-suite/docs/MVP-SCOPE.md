@@ -18,7 +18,7 @@ Do not build a dashboard, service, plugin system, generalized event bus, shared 
 ## Recommended delivery order
 
 1. mg-vault: dependable user-owned knowledge files and basic search.
-2. mg-todo / mg-plan: dependable commitments and work-item state.
+2. mg-remindr / mg-plan: dependable commitments and work-item state.
 3. mg-calr: dependable events and day agenda.
 4. mg-brief: dependable source/CVE catalog and provenance-preserving findings.
 5. mg-contacts: dependable encrypted local contacts.
@@ -53,13 +53,13 @@ Watcher daemon, IPC/service lifecycle, TUI/editor, rich Markdown AST, headings/b
 
 A scripted session can register a temporary vault, create a note, read it, update it with the correct fingerprint, reject a stale update, trash/restore it, rebuild/search, restart the binary, and obtain the same source-backed result. Security tests prove that unsafe paths cannot escape the vault.
 
-## 2. mg-todo compatibility surface / mg-plan authority
+## 2. mg-remindr compatibility surface / mg-plan authority
 
 Repositories: `~/mg-suite/mg-remindr` and `~/mg-suite/mg-planr`
 
 ### Product decision
 
-`mg-plan` is the product. `reminders` is the existing `mg-todo` authority and migration/compatibility surface. Do not create two competing task products. Preserve existing IDs and compatibility exports while moving consumers to plan-native vocabulary.
+`mg-plan` is the product. `reminders` is the existing `mg-remindr` authority and migration/compatibility surface. Do not create two competing task products. Preserve existing IDs and compatibility exports while moving consumers to plan-native vocabulary.
 
 ### MVP promise
 
@@ -76,7 +76,7 @@ A user can create a project and work items, organize prerequisites, move work th
 - Report typed verification gaps: missing, failing, stale, or missing evidence.
 - Reject stale writers using optimistic revision checks.
 - Export/import a versioned `mg.plan/1` JSON envelope with producer identity and conflict-safe revision checks.
-- Preserve the current `mg-todo` CLI/projection long enough for verified migration.
+- Preserve the current `mg-remindr` CLI/projection long enough for verified migration.
 
 ### Explicitly not required for MVP
 
@@ -103,7 +103,7 @@ A user can create calendars and events, inspect a reliable day agenda, and cance
 - List/show events, query a day agenda, edit events with optimistic locking, and cancel/restore them.
 - Provide the bounded keyboard-first agenda shell already present, but do not expand it into a full desktop application.
 - Export/import calendar/event data transactionally and deterministically.
-- Read `mg-todo` only through a validated imported projection; never read the sibling database directly.
+- Read `mg-remindr` only through a validated imported projection; never read the sibling database directly.
 
 ### Explicitly not required for MVP
 
@@ -206,7 +206,7 @@ authority, or an implicit mutation path.
 - Launch only existing, independently smoke-tested application artifacts through a stable wrapper.
 - Provide a Quickshell bar pill and panel showing per-application status, supported capabilities, and explicit remaining scope.
 - Permit refresh, repository inspection, and application launch without direct sibling-database access.
-- Provide an explicit todo-to-calendar projection refresh that exports through `mg-todo` and imports through `mg-calr` validation; never synchronize by opening the sibling database.
+- Provide an explicit todo-to-calendar projection refresh that exports through `mg-remindr` and imports through `mg-calr` validation; never synchronize by opening the sibling database.
 - Keep status refresh bounded by time and output limits, with last-known-good state marked stale rather than presented as current.
 
 ### Explicitly not required for this slice

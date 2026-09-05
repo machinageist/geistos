@@ -387,7 +387,7 @@ Every assessment observation should preserve:
 - allowing calendar events to determine curriculum priority
 - marking skills complete from project existence or note creation
 - making `mg-plan` own Git, CI, raw evidence, calendar events, or infrastructure state
-- expanding `mg-todo` instead of completing the migration toward `mg-plan`
+- expanding `mg-remindr` instead of completing the migration toward `mg-plan`
 - building advanced scheduling, generalized workflow automation, or a central omnipotent agent before the narrow path works
 
 ## Completion gates for the integration

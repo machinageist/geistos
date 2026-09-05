@@ -5,7 +5,7 @@ Status: planned post-MVP bootstrap roadmap.
 All five current repository MVPs have passed their scoped gates:
 
 - `mg-vault` — user-owned Markdown authority, safe note operations, trash/restore, disposable search index, and deterministic export;
-- `mg-plan` / `mg-todo` — plans, projects, work items, prerequisites, dependencies, recurrence, criteria, verification, evidence references, completion judgments, reminders, delivery state, and compatibility export;
+- `mg-plan` / `mg-remindr` — plans, projects, work items, prerequisites, dependencies, recurrence, criteria, verification, evidence references, completion judgments, reminders, delivery state, and compatibility export;
 - `mg-calr` / `calendar` — calendars, events, agenda behavior, optimistic locking, cancel/restore, import/export, and validated todo projection import;
 - `mg-brief` — bounded source acquisition, CVE records and history, asset observations, provenance, immutable imports, and deterministic export;
 - `mg-contacts` — encrypted local contacts, process-local authentication, CRUD, audit, soft deletion, and privacy safeguards.
@@ -85,13 +85,13 @@ The narrow reference path can be exercised end to end, survives restart, preserv
 
 ### Objective
 
-Move the suite from the compatibility surface of `mg-todo` toward the plan-native `mg-plan` vocabulary and contracts without breaking existing durable data or consumers.
+Move the suite from the compatibility surface of `mg-remindr` toward the plan-native `mg-plan` vocabulary and contracts without breaking existing durable data or consumers.
 
 ### Scope
 
 - Preserve existing project, todo, tag, relationship, and revision identifiers.
 - Introduce and verify plan-native `work_item` APIs and projections.
-- Preserve the existing `mg-todo` CLI and producer contract during migration.
+- Preserve the existing `mg-remindr` CLI and producer contract during migration.
 - Export compatibility and plan-native projections when their bytes or identities differ.
 - Extend acceptance criteria, gates, verdicts, waivers, and verification-gap reporting.
 - Keep verification pinned to exact subject revisions.
@@ -109,7 +109,7 @@ Move the suite from the compatibility surface of `mg-todo` toward the plan-nativ
 
 ### Completion evidence
 
-A compatibility-preserving migration can create and inspect a plan-native work item, retain existing IDs, export both required representations, detect stale verification, reject stale writers, and prove that existing `mg-todo` consumers still work.
+A compatibility-preserving migration can create and inspect a plan-native work item, retain existing IDs, export both required representations, detect stale verification, reject stale writers, and prove that existing `mg-remindr` consumers still work.
 
 ## Phase 3 — `mg-vault` Milestone 2 runtime and structural depth
 

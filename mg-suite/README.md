@@ -24,11 +24,11 @@ application below is a separate Git repository with its own history and remote.
 | `mg-vaultr/` | `mg-vault`, `mg-vault-indexd` | Notes, concepts, claims, citations, knowledge relationships and revisions | Markdown files; disposable SQLite index |
 | `mg-planr/` | `mg-plan` | Plans, work items, dependencies, acceptance criteria, evidence references, verification records, completion judgments | SQLite |
 | `mg-calr/` | `mg-calr` | Calendars, events, time blocks, recurrence, availability, conflicts, external sync state | PostgreSQL |
-| `mg-remindr/` | `mg-todo` | Todos, projects, tags, lifecycle and transition times; the projection `mg-calr` reads for its agenda | PostgreSQL |
+| `mg-remindr/` | `mg-remindr` | Todos, projects, tags, lifecycle and transition times; the projection `mg-calr` reads for its agenda | PostgreSQL |
 | `mg-contactr/` | `mg-contacts` | Contact identity, encrypted fields, revisions, audit history, soft-delete state | Encrypted local store |
 
-Directory names carry an `r` suffix; crate and binary names do not. The binary is
-what you type.
+Directory and binary names agree for `mg-calr` and `mg-remindr`. Elsewhere the
+directory carries an `r` suffix the binary drops. The binary is what you type.
 
 ### Boundaries worth stating
 
@@ -40,14 +40,14 @@ what you type.
   does not own raw evidence, repositories, CI, or calendar events.
 - **mg-plan** owns work and scheduling *intent*; **mg-calr** owns the resulting
   temporal allocation.
-- **mg-todo** is a transitional authority retained for compatibility while planning
+- **mg-remindr** is a transitional authority retained for compatibility while planning
   ownership moves to mg-plan. Do not deepen this boundary without an explicit
   migration step.
 
 ## Build and test
 
 Requires a Rust toolchain at **1.85 or newer** (several crates use edition 2024).
-`mg-calr` and `mg-todo` additionally need a local PostgreSQL server; the rest are
+`mg-calr` and `mg-remindr` additionally need a local PostgreSQL server; the rest are
 self-contained.
 
 Each application builds independently:
@@ -69,7 +69,7 @@ MG_CALR_TEST_DATABASE_URL=postgresql:///mg_calr_test \
 TMPDIR=/dev/shm cargo test --test postgres_integration -- --ignored
 
 # mg-remindr
-MG_TODO_ALLOW_INTEGRATION_TESTS=1 TMPDIR=/dev/shm cargo test --all-targets
+MG_REMINDR_ALLOW_INTEGRATION_TESTS=1 TMPDIR=/dev/shm cargo test --all-targets
 ```
 
 `mg-calr init` diagnoses configuration only. It never runs `sudo`, creates roles or
@@ -84,7 +84,7 @@ and exact verification commands.
 The one cross-application path in service today is the todo agenda projection:
 
 ```text
-mg-todo interop export
+mg-remindr interop export
   -> validated temporary snapshot
   -> mg-calr interop import-todo
   -> crash-safe todo projection used by the calendar agenda
@@ -93,7 +93,7 @@ mg-todo interop export
 The bridge invokes the two CLIs and never touches a sibling database directly. It
 runs from `~/dotfiles/scripts/geist-sync-todo-projection`, or from the "Refresh todo
 agenda" action in the Quickshell Geist panel. The script resolves binaries through
-`MG_TODO_BIN` and `MG_CALR_BIN`, which is how you point it at this checkout.
+`MG_REMINDR_BIN` and `MG_CALR_BIN`, which is how you point it at this checkout.
 
 ## Authority rules
 
@@ -162,7 +162,7 @@ scorecards under their own `docs/specs/` and `docs/reviews/`.
 Every application has passed its scoped MVP gate: it does its core job from the
 CLI, survives a restart with the authoritative result intact, and covers the happy
 path, persistence, invalid input, and its most important safety boundary. mg-plan
-and mg-todo were gated together as one planning surface during the transition.
+and mg-remindr were gated together as one planning surface during the transition.
 
 The work ahead is post-MVP integration, starting with the typed cross-application
 reference and receipt path.
