@@ -28,7 +28,7 @@ The order is practical, not a requirement that every repository wait for the pre
 
 ## 1. mg-vault
 
-Repository: `~/mg-suite/mg-vaultr`
+Repository: `~/geistos/mg-suite/mg-vaultr`
 
 ### MVP promise
 
@@ -55,7 +55,7 @@ A scripted session can register a temporary vault, create a note, read it, updat
 
 ## 2. mg-remindr compatibility surface / mg-plan authority
 
-Repositories: `~/mg-suite/mg-remindr` and `~/mg-suite/mg-planr`
+Repositories: `~/geistos/mg-suite/mg-remindr` and `~/geistos/mg-suite/mg-planr`
 
 ### Product decision
 
@@ -88,7 +88,7 @@ A scripted session can create a plan, add dependent work, demonstrate blocked st
 
 ## 3. mg-calr
 
-Repository: `~/mg-suite/mg-calr`
+Repository: `~/geistos/mg-suite/mg-calr`
 
 ### MVP promise
 
@@ -115,7 +115,7 @@ Against a disposable local PostgreSQL database, a scripted session can migrate, 
 
 ## 4. mg-brief
 
-Repository: `~/mg-suite/mg-briefr`
+Repository: `~/geistos/mg-suite/mg-briefr`
 
 ### MVP promise
 
@@ -142,7 +142,7 @@ A fixture-driven session can register/fetch a source using bounded network behav
 
 ## 5. mg-contacts
 
-Repository: `~/mg-suite/mg-contactr`
+Repository: `~/geistos/mg-suite/mg-contactr`
 
 ### MVP promise
 

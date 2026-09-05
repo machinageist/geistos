@@ -2,6 +2,11 @@
 
 Status: notes, not a decision. Nothing here is committed to a shape yet.
 
+`geistos` now exists as a repository at `~/geistos`, holding the Hyprland and
+Quickshell configuration. This suite lives inside it at `~/geistos/mg-suite` and
+remains a separate repository, ignored there. The installer described below is
+still unwritten.
+
 The goal is one downloadable thing that installs the Geist application suite and
 its Hyprland/Quickshell integration together, in the spirit of Omarchy. These are
 the constraints a packager will hit, gathered while renaming the suite and
@@ -86,7 +91,7 @@ upgrade that changes interop identity needs that as a migration step.
   The applications genuinely do stand alone; the shell integration does not.
 - **Where do the bridge scripts live?** `dotfiles/scripts/geist-*` are the seam
   between Quickshell and the CLIs. They resolve binaries through `MG_*_BIN`
-  environment variables with `~/mg-suite/...` debug-build defaults — that default
+  environment variables with `~/geistos/mg-suite/...` debug-build defaults — that default
   is a development path and must become the installed path in a package.
 - **Versioning.** Seven independently versioned repos, all at 0.1.0. A
   distribution needs one version that pins a set, which is the manifest idea from
