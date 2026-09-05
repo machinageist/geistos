@@ -1,0 +1,21 @@
+# Application repositories.
+# Each subdirectory is an independent Git repository with its own remote and
+# history. This umbrella repository tracks only suite-level docs, so the
+# applications are ignored here rather than nested or vendored.
+/mg-briefr/
+/mg-calr/
+/mg-contactr/
+/mg-planr/
+/mg-remindr/
+/mg-vaultr/
+
+# Local agent session state
+/.claude/
+/.sessions
+
+# Editor and OS noise
+*.swp
+*~
+.idea/
+.vscode/
+.DS_Store
