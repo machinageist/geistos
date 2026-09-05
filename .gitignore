@@ -1,0 +1,15 @@
+# The application suite is its own repository with its own history and remote.
+# geistos tracks the desktop configuration and, in time, the installer that
+# pins and builds the suite.
+/mg-suite/
+
+# Editor and OS noise
+*.swp
+*~
+.idea/
+.vscode/
+.DS_Store
+
+# Python bytecode from any tooling added later
+__pycache__/
+*.pyc

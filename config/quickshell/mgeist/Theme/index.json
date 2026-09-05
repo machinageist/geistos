@@ -1,0 +1,1154 @@
+[
+  {
+    "name": "lunarcore",
+    "label": "Lunarcore",
+    "group": "Core",
+    "glyph": "⏾",
+    "dark": true,
+    "pair": "solarcore",
+    "swatch": [
+      "#7fe3ff",
+      "#f47b7b",
+      "#f4e07b",
+      "#7bf48f",
+      "#7bf4f4",
+      "#bc7bf4"
+    ]
+  },
+  {
+    "name": "solarcore",
+    "label": "Solarcore",
+    "group": "Core",
+    "glyph": "✸",
+    "dark": false,
+    "pair": "lunarcore",
+    "swatch": [
+      "#2a6f34",
+      "#6f2a2a",
+      "#6f642a",
+      "#2a6f35",
+      "#2a6f6f",
+      "#4f2a6f"
+    ]
+  },
+  {
+    "name": "ayu",
+    "label": "Ayu",
+    "group": "Editor",
+    "glyph": "⟡",
+    "dark": true,
+    "pair": "ayu-light",
+    "swatch": [
+      "#e6b450",
+      "#f07178",
+      "#e6b450",
+      "#aad94c",
+      "#95e6cb",
+      "#d2a6ff"
+    ]
+  },
+  {
+    "name": "ayu-light",
+    "label": "Ayu Light",
+    "group": "Editor",
+    "glyph": "⟡",
+    "dark": false,
+    "pair": "ayu",
+    "swatch": [
+      "#866013",
+      "#c2141e",
+      "#866013",
+      "#567619",
+      "#1b7356",
+      "#6a0dc9"
+    ]
+  },
+  {
+    "name": "dracula",
+    "label": "Dracula",
+    "group": "Editor",
+    "glyph": "✦",
+    "dark": true,
+    "pair": "dracula-light",
+    "swatch": [
+      "#bd93f9",
+      "#ff5555",
+      "#f1fa8c",
+      "#50fa7b",
+      "#8be9fd",
+      "#bd93f9"
+    ]
+  },
+  {
+    "name": "dracula-light",
+    "label": "Dracula Light",
+    "group": "Editor",
+    "glyph": "✦",
+    "dark": false,
+    "pair": "dracula",
+    "swatch": [
+      "#560cc0",
+      "#c90d0d",
+      "#626907",
+      "#087d26",
+      "#097086",
+      "#5a0dc9"
+    ]
+  },
+  {
+    "name": "gruvbox",
+    "label": "Gruvbox",
+    "group": "Editor",
+    "glyph": "◆",
+    "dark": true,
+    "pair": "gruvbox-light",
+    "swatch": [
+      "#fabd2f",
+      "#fb4934",
+      "#fabd2f",
+      "#b8bb26",
+      "#8ec07c",
+      "#d3869b"
+    ]
+  },
+  {
+    "name": "gruvbox-light",
+    "label": "Gruvbox Light",
+    "group": "Editor",
+    "glyph": "◆",
+    "dark": false,
+    "pair": "gruvbox",
+    "swatch": [
+      "#866109",
+      "#c9210d",
+      "#866109",
+      "#6c6e16",
+      "#487539",
+      "#9d3954"
+    ]
+  },
+  {
+    "name": "material",
+    "label": "Material",
+    "group": "Editor",
+    "glyph": "⬗",
+    "dark": true,
+    "pair": "material-light",
+    "swatch": [
+      "#c792ea",
+      "#f07178",
+      "#ffcb6b",
+      "#c3e88d",
+      "#89ddff",
+      "#c792ea"
+    ]
+  },
+  {
+    "name": "material-light",
+    "label": "Material Light",
+    "group": "Editor",
+    "glyph": "⬗",
+    "dark": false,
+    "pair": "material",
+    "swatch": [
+      "#7421ab",
+      "#c2141e",
+      "#906109",
+      "#4a6e16",
+      "#0a7099",
+      "#7a23b4"
+    ]
+  },
+  {
+    "name": "monokai",
+    "label": "Monokai",
+    "group": "Editor",
+    "glyph": "✱",
+    "dark": true,
+    "pair": "monokai-light",
+    "swatch": [
+      "#f92672",
+      "#f92672",
+      "#e6db74",
+      "#a6e22e",
+      "#66d9ef",
+      "#ae81ff"
+    ]
+  },
+  {
+    "name": "monokai-light",
+    "label": "Monokai Light",
+    "group": "Editor",
+    "glyph": "✱",
+    "dark": false,
+    "pair": "monokai",
+    "swatch": [
+      "#c00c4d",
+      "#c90d51",
+      "#796f16",
+      "#537410",
+      "#0e778b",
+      "#500dc9"
+    ]
+  },
+  {
+    "name": "nord",
+    "label": "Nord",
+    "group": "Editor",
+    "glyph": "❄",
+    "dark": true,
+    "pair": "nord-light",
+    "swatch": [
+      "#88c0d0",
+      "#bf616a",
+      "#ebcb8b",
+      "#a3be8c",
+      "#88c0d0",
+      "#b48ead"
+    ]
+  },
+  {
+    "name": "nord-light",
+    "label": "Nord Light",
+    "group": "Editor",
+    "glyph": "❄",
+    "dark": false,
+    "pair": "nord",
+    "swatch": [
+      "#347283",
+      "#983e46",
+      "#8b6418",
+      "#556f3e",
+      "#347284",
+      "#894d7e"
+    ]
+  },
+  {
+    "name": "one-dark",
+    "label": "One Dark",
+    "group": "Editor",
+    "glyph": "⬢",
+    "dark": true,
+    "pair": "one-light",
+    "swatch": [
+      "#c678dd",
+      "#e06c75",
+      "#e5c07b",
+      "#98c379",
+      "#56b6c2",
+      "#c678dd"
+    ]
+  },
+  {
+    "name": "one-light",
+    "label": "One Light",
+    "group": "Editor",
+    "glyph": "⬡",
+    "dark": false,
+    "pair": "one-dark",
+    "swatch": [
+      "#a626a4",
+      "#e45649",
+      "#c18401",
+      "#50a14f",
+      "#0184bc",
+      "#a626a4"
+    ]
+  },
+  {
+    "name": "solarized",
+    "label": "Solarized",
+    "group": "Editor",
+    "glyph": "◉",
+    "dark": true,
+    "pair": "solarized-light",
+    "swatch": [
+      "#2ca99f",
+      "#dc322f",
+      "#b58900",
+      "#859900",
+      "#2aa198",
+      "#6c71c4"
+    ]
+  },
+  {
+    "name": "solarized-light",
+    "label": "Solarized Light",
+    "group": "Editor",
+    "glyph": "◉",
+    "dark": false,
+    "pair": "solarized",
+    "swatch": [
+      "#1f7a72",
+      "#b7211f",
+      "#866809",
+      "#657307",
+      "#1f7a72",
+      "#3d4399"
+    ]
+  },
+  {
+    "name": "tomorrow-night",
+    "label": "Tomorrow Night",
+    "group": "Editor",
+    "glyph": "✧",
+    "dark": true,
+    "pair": "tomorrow-day",
+    "swatch": [
+      "#b294bb",
+      "#cc6666",
+      "#f0c674",
+      "#b5bd68",
+      "#8abeb7",
+      "#b294bb"
+    ]
+  },
+  {
+    "name": "tomorrow-day",
+    "label": "Tomorrow Night Light",
+    "group": "Editor",
+    "glyph": "✧",
+    "dark": false,
+    "pair": "tomorrow-night",
+    "swatch": [
+      "#754983",
+      "#a13636",
+      "#8a610f",
+      "#656b2e",
+      "#41766f",
+      "#7b4d89"
+    ]
+  },
+  {
+    "name": "zenburn",
+    "label": "Zenburn",
+    "group": "Editor",
+    "glyph": "⌾",
+    "dark": true,
+    "pair": "zenburn-light",
+    "swatch": [
+      "#dc8cc3",
+      "#cc9393",
+      "#f0dfaf",
+      "#7f9f7f",
+      "#93e0e3",
+      "#dc8cc3"
+    ]
+  },
+  {
+    "name": "zenburn-light",
+    "label": "Zenburn Light",
+    "group": "Editor",
+    "glyph": "⌾",
+    "dark": false,
+    "pair": "zenburn",
+    "swatch": [
+      "#9c307a",
+      "#914545",
+      "#816618",
+      "#427642",
+      "#1f767a",
+      "#a43281"
+    ]
+  },
+  {
+    "name": "frankenstein",
+    "label": "Frankenstein",
+    "group": "Horror",
+    "glyph": "⚡",
+    "dark": true,
+    "pair": "frankenstein-light",
+    "swatch": [
+      "#b6e35b",
+      "#e05a5a",
+      "#d8d95a",
+      "#9ee35b",
+      "#74d8c0",
+      "#aa88c9"
+    ]
+  },
+  {
+    "name": "frankenstein-light",
+    "label": "Frankenstein Light",
+    "group": "Horror",
+    "glyph": "⚡",
+    "dark": false,
+    "pair": "frankenstein",
+    "swatch": [
+      "#527114",
+      "#b42222",
+      "#6b6c19",
+      "#477a15",
+      "#227763",
+      "#6d4393"
+    ]
+  },
+  {
+    "name": "mummy",
+    "label": "Mummy",
+    "group": "Horror",
+    "glyph": "𓂀",
+    "dark": true,
+    "pair": "mummy-light",
+    "swatch": [
+      "#d6a84f",
+      "#c86645",
+      "#e0bd59",
+      "#9caf59",
+      "#6eb6a5",
+      "#a47c9d"
+    ]
+  },
+  {
+    "name": "mummy-light",
+    "label": "Mummy Light",
+    "group": "Horror",
+    "glyph": "𓂀",
+    "dark": false,
+    "pair": "mummy",
+    "swatch": [
+      "#8c6821",
+      "#a54e31",
+      "#816618",
+      "#616e35",
+      "#3a7366",
+      "#894d7f"
+    ]
+  },
+  {
+    "name": "phantom",
+    "label": "Phantom",
+    "group": "Horror",
+    "glyph": "◌",
+    "dark": true,
+    "pair": "phantom-light",
+    "swatch": [
+      "#d6b3ff",
+      "#e16c91",
+      "#dbc979",
+      "#86cf9d",
+      "#79d4d4",
+      "#c2a0ef"
+    ]
+  },
+  {
+    "name": "phantom-light",
+    "label": "Phantom Light",
+    "group": "Horror",
+    "glyph": "◌",
+    "dark": false,
+    "pair": "phantom",
+    "swatch": [
+      "#5f0cc0",
+      "#b22451",
+      "#796820",
+      "#2f7545",
+      "#257474",
+      "#601fb7"
+    ]
+  },
+  {
+    "name": "creature",
+    "label": "The Creature",
+    "group": "Horror",
+    "glyph": "≋",
+    "dark": true,
+    "pair": "creature-light",
+    "swatch": [
+      "#54d6bf",
+      "#dd6868",
+      "#d5d56b",
+      "#7fd18e",
+      "#54d6bf",
+      "#a28bc5"
+    ]
+  },
+  {
+    "name": "creature-light",
+    "label": "The Creature Light",
+    "group": "Horror",
+    "glyph": "≋",
+    "dark": false,
+    "pair": "creature",
+    "swatch": [
+      "#1d7c6a",
+      "#af2727",
+      "#6f6f1f",
+      "#2e7f3c",
+      "#1d7c6b",
+      "#64478f"
+    ]
+  },
+  {
+    "name": "werewolf",
+    "label": "Werewolf",
+    "group": "Horror",
+    "glyph": "☾",
+    "dark": true,
+    "pair": "werewolf-light",
+    "swatch": [
+      "#9db8e8",
+      "#d26372",
+      "#d8c477",
+      "#91b77d",
+      "#79c4c7",
+      "#a992d0"
+    ]
+  },
+  {
+    "name": "werewolf-light",
+    "label": "Werewolf Light",
+    "group": "Horror",
+    "glyph": "☾",
+    "dark": false,
+    "pair": "werewolf",
+    "swatch": [
+      "#2754a5",
+      "#a63040",
+      "#776622",
+      "#4f703e",
+      "#307173",
+      "#604196"
+    ]
+  },
+  {
+    "name": "blueprint",
+    "label": "Blueprint",
+    "group": "Light & print",
+    "glyph": "⊟",
+    "dark": true,
+    "pair": "",
+    "swatch": [
+      "#8bd8ff",
+      "#2faeee",
+      "#63c2f2",
+      "#7bcbf4",
+      "#92d5f6",
+      "#c2e7fa"
+    ]
+  },
+  {
+    "name": "cloud",
+    "label": "Cloud",
+    "group": "Light & print",
+    "glyph": "☁",
+    "dark": false,
+    "pair": "",
+    "swatch": [
+      "#5369a8",
+      "#a63f3f",
+      "#a6953f",
+      "#3fa650",
+      "#3fa6a6",
+      "#763fa6"
+    ]
+  },
+  {
+    "name": "dawn",
+    "label": "Dawn",
+    "group": "Light & print",
+    "glyph": "◒",
+    "dark": false,
+    "pair": "",
+    "swatch": [
+      "#9a4f72",
+      "#a63f3f",
+      "#a6953f",
+      "#3fa650",
+      "#3fa6a6",
+      "#763fa6"
+    ]
+  },
+  {
+    "name": "light",
+    "label": "Light",
+    "group": "Light & print",
+    "glyph": "☀",
+    "dark": false,
+    "pair": "",
+    "swatch": [
+      "#644ac9",
+      "#b13535",
+      "#b19c35",
+      "#35b149",
+      "#35b1b1",
+      "#7735b1"
+    ]
+  },
+  {
+    "name": "paper",
+    "label": "Paper",
+    "group": "Light & print",
+    "glyph": "¶",
+    "dark": false,
+    "pair": "",
+    "swatch": [
+      "#8a2f13",
+      "#8a1313",
+      "#8a7613",
+      "#138a27",
+      "#138a8a",
+      "#52138a"
+    ]
+  },
+  {
+    "name": "sepia",
+    "label": "Steampunk",
+    "group": "Light & print",
+    "glyph": "⚙",
+    "dark": true,
+    "pair": "",
+    "swatch": [
+      "#e0b154",
+      "#e05454",
+      "#e0c954",
+      "#54e06b",
+      "#54e0e0",
+      "#9f54e0"
+    ]
+  },
+  {
+    "name": "catppuccin-frappe",
+    "label": "Catppuccin Frappé",
+    "group": "Modern",
+    "glyph": "◑",
+    "dark": true,
+    "pair": "",
+    "swatch": [
+      "#ca9ee6",
+      "#e78284",
+      "#e5c890",
+      "#a6d189",
+      "#99d1db",
+      "#ca9ee6"
+    ]
+  },
+  {
+    "name": "catppuccin-latte",
+    "label": "Catppuccin Latte",
+    "group": "Modern",
+    "glyph": "○",
+    "dark": false,
+    "pair": "",
+    "swatch": [
+      "#8839ef",
+      "#d20f39",
+      "#df8e1d",
+      "#40a02b",
+      "#04a5e5",
+      "#8839ef"
+    ]
+  },
+  {
+    "name": "catppuccin-macchiato",
+    "label": "Catppuccin Macchiato",
+    "group": "Modern",
+    "glyph": "◕",
+    "dark": true,
+    "pair": "",
+    "swatch": [
+      "#c6a0f6",
+      "#ed8796",
+      "#eed49f",
+      "#a6da95",
+      "#91d7e3",
+      "#c6a0f6"
+    ]
+  },
+  {
+    "name": "catppuccin-mocha",
+    "label": "Catppuccin Mocha",
+    "group": "Modern",
+    "glyph": "●",
+    "dark": true,
+    "pair": "",
+    "swatch": [
+      "#cba6f7",
+      "#f38ba8",
+      "#f9e2af",
+      "#a6e3a1",
+      "#89dceb",
+      "#cba6f7"
+    ]
+  },
+  {
+    "name": "everforest",
+    "label": "Everforest",
+    "group": "Modern",
+    "glyph": "❦",
+    "dark": true,
+    "pair": "everforest-light",
+    "swatch": [
+      "#a7c080",
+      "#e67e80",
+      "#dbbc7f",
+      "#a7c080",
+      "#83c092",
+      "#d699b6"
+    ]
+  },
+  {
+    "name": "everforest-light",
+    "label": "Everforest Light",
+    "group": "Modern",
+    "glyph": "❦",
+    "dark": false,
+    "pair": "everforest",
+    "swatch": [
+      "#5e743a",
+      "#b32326",
+      "#876726",
+      "#5d743a",
+      "#3a7348",
+      "#993d69"
+    ]
+  },
+  {
+    "name": "kanagawa",
+    "label": "Kanagawa",
+    "group": "Modern",
+    "glyph": "◭",
+    "dark": true,
+    "pair": "kanagawa-lotus",
+    "swatch": [
+      "#957fb8",
+      "#c34043",
+      "#e6c384",
+      "#98bb6c",
+      "#6a9589",
+      "#957fb8"
+    ]
+  },
+  {
+    "name": "kanagawa-lotus",
+    "label": "Kanagawa Light",
+    "group": "Modern",
+    "glyph": "◭",
+    "dark": false,
+    "pair": "kanagawa",
+    "swatch": [
+      "#5f4983",
+      "#a33336",
+      "#88611b",
+      "#556f34",
+      "#3e6f61",
+      "#644c8a"
+    ]
+  },
+  {
+    "name": "rose-pine",
+    "label": "Rosé Pine",
+    "group": "Modern",
+    "glyph": "✿",
+    "dark": true,
+    "pair": "rose-pine-dawn",
+    "swatch": [
+      "#c4a7e7",
+      "#eb6f92",
+      "#f6c177",
+      "#31748f",
+      "#9ccfd8",
+      "#c4a7e7"
+    ]
+  },
+  {
+    "name": "rose-pine-dawn",
+    "label": "Rosé Pine Light",
+    "group": "Modern",
+    "glyph": "✿",
+    "dark": false,
+    "pair": "rose-pine",
+    "swatch": [
+      "#612ca0",
+      "#bc1a48",
+      "#905809",
+      "#2f6e89",
+      "#31717d",
+      "#652ea8"
+    ]
+  },
+  {
+    "name": "tokyo-night",
+    "label": "Tokyo Night",
+    "group": "Modern",
+    "glyph": "✺",
+    "dark": true,
+    "pair": "tokyo-night-light",
+    "swatch": [
+      "#bb9af7",
+      "#f7768e",
+      "#e0af68",
+      "#9ece6a",
+      "#7dcfff",
+      "#bb9af7"
+    ]
+  },
+  {
+    "name": "tokyo-night-light",
+    "label": "Tokyo Night Light",
+    "group": "Modern",
+    "glyph": "✺",
+    "dark": false,
+    "pair": "tokyo-night",
+    "swatch": [
+      "#4d0fbd",
+      "#c90d30",
+      "#90611d",
+      "#4e7326",
+      "#0b6ba3",
+      "#5110c6"
+    ]
+  },
+  {
+    "name": "cyberpunk",
+    "label": "Cyberpunk",
+    "group": "Neon",
+    "glyph": "⌖",
+    "dark": true,
+    "pair": "cyberpunk-light",
+    "swatch": [
+      "#fcee0a",
+      "#ee2b2b",
+      "#eecd2b",
+      "#2bee4b",
+      "#2beeee",
+      "#932bee"
+    ]
+  },
+  {
+    "name": "cyberpunk-light",
+    "label": "Cyberpunk Light",
+    "group": "Neon",
+    "glyph": "⌖",
+    "dark": false,
+    "pair": "cyberpunk",
+    "swatch": [
+      "#736c07",
+      "#c61010",
+      "#7b670a",
+      "#0a7b1d",
+      "#097171",
+      "#7110c6"
+    ]
+  },
+  {
+    "name": "synthwave",
+    "label": "Synthwave",
+    "group": "Neon",
+    "glyph": "▹",
+    "dark": true,
+    "pair": "synthwave-light",
+    "swatch": [
+      "#ff5fa8",
+      "#f36b6b",
+      "#f3dc6b",
+      "#6bf382",
+      "#6bf3f3",
+      "#b46bf3"
+    ]
+  },
+  {
+    "name": "synthwave-light",
+    "label": "Synthwave Light",
+    "group": "Neon",
+    "glyph": "▹",
+    "dark": false,
+    "pair": "synthwave",
+    "swatch": [
+      "#c00c5e",
+      "#c61010",
+      "#7b670a",
+      "#09711b",
+      "#097171",
+      "#7210c6"
+    ]
+  },
+  {
+    "name": "tron",
+    "label": "Tron",
+    "group": "Neon",
+    "glyph": "⊞",
+    "dark": true,
+    "pair": "tron-light",
+    "swatch": [
+      "#6ee2ff",
+      "#f47979",
+      "#f4e079",
+      "#79f48d",
+      "#79f4f4",
+      "#bb79f4"
+    ]
+  },
+  {
+    "name": "tron-light",
+    "label": "Tron Light",
+    "group": "Neon",
+    "glyph": "⊞",
+    "dark": false,
+    "pair": "tron",
+    "swatch": [
+      "#097590",
+      "#c61010",
+      "#7b680a",
+      "#0a7b1d",
+      "#097171",
+      "#7210c6"
+    ]
+  },
+  {
+    "name": "vaporwave",
+    "label": "Vaporwave",
+    "group": "Neon",
+    "glyph": "▧",
+    "dark": true,
+    "pair": "vaporwave-light",
+    "swatch": [
+      "#3fd8ff",
+      "#f14d4d",
+      "#f1d54d",
+      "#4df169",
+      "#4df1f1",
+      "#a44df1"
+    ]
+  },
+  {
+    "name": "vaporwave-light",
+    "label": "Vaporwave Light",
+    "group": "Neon",
+    "glyph": "▧",
+    "dark": false,
+    "pair": "vaporwave",
+    "swatch": [
+      "#097490",
+      "#c71010",
+      "#7b680a",
+      "#0a7b1d",
+      "#097171",
+      "#7110c7"
+    ]
+  },
+  {
+    "name": "nes",
+    "label": "8-Bit",
+    "group": "Retro",
+    "glyph": "✜",
+    "dark": true,
+    "pair": "nes-light",
+    "swatch": [
+      "#6ea2ff",
+      "#f47979",
+      "#f4e079",
+      "#79f48d",
+      "#79f4f4",
+      "#bb79f4"
+    ]
+  },
+  {
+    "name": "nes-light",
+    "label": "8-Bit Light",
+    "group": "Retro",
+    "glyph": "✜",
+    "dark": false,
+    "pair": "nes",
+    "swatch": [
+      "#0c4dc0",
+      "#c61010",
+      "#7b680a",
+      "#0a7b1d",
+      "#097171",
+      "#7210c6"
+    ]
+  },
+  {
+    "name": "c64",
+    "label": "Commodore",
+    "group": "Retro",
+    "glyph": "▩",
+    "dark": true,
+    "pair": "c64-light",
+    "swatch": [
+      "#8be9ff",
+      "#2fcaee",
+      "#63d7f2",
+      "#7bddf4",
+      "#92e3f6",
+      "#c2effa"
+    ]
+  },
+  {
+    "name": "c64-light",
+    "label": "Commodore Light",
+    "group": "Retro",
+    "glyph": "▩",
+    "dark": false,
+    "pair": "c64",
+    "swatch": [
+      "#096e86",
+      "#0b6d84",
+      "#0b6d84",
+      "#0b6d84",
+      "#0b6d84",
+      "#0b6c84"
+    ]
+  },
+  {
+    "name": "gameboy",
+    "label": "Game Boy",
+    "group": "Retro",
+    "glyph": "▣",
+    "dark": true,
+    "pair": "gameboy-light",
+    "swatch": [
+      "#cfe36a",
+      "#b7d428",
+      "#c8df55",
+      "#cfe36a",
+      "#d6e77f",
+      "#e4efaa"
+    ]
+  },
+  {
+    "name": "gameboy-light",
+    "label": "Game Boy Light",
+    "group": "Retro",
+    "glyph": "▣",
+    "dark": false,
+    "pair": "gameboy",
+    "swatch": [
+      "#617015",
+      "#617015",
+      "#617015",
+      "#617015",
+      "#617015",
+      "#617015"
+    ]
+  },
+  {
+    "name": "amber",
+    "label": "Amber",
+    "group": "Terminal",
+    "glyph": "◈",
+    "dark": true,
+    "pair": "amber-light",
+    "swatch": [
+      "#ffcf5e",
+      "#edaf1f",
+      "#f1c252",
+      "#f3ca6a",
+      "#f5d282",
+      "#f9e3b1"
+    ]
+  },
+  {
+    "name": "amber-light",
+    "label": "Amber Light",
+    "group": "Terminal",
+    "glyph": "◈",
+    "dark": false,
+    "pair": "amber",
+    "swatch": [
+      "#906709",
+      "#8e660b",
+      "#8e670b",
+      "#8e670b",
+      "#8e660b",
+      "#8e660b"
+    ]
+  },
+  {
+    "name": "crt",
+    "label": "CRT",
+    "group": "Terminal",
+    "glyph": "▦",
+    "dark": true,
+    "pair": "crt-light",
+    "swatch": [
+      "#7dffa0",
+      "#2fee63",
+      "#63f28a",
+      "#7bf49c",
+      "#92f6ad",
+      "#c2fad1"
+    ]
+  },
+  {
+    "name": "crt-light",
+    "label": "CRT Light",
+    "group": "Terminal",
+    "glyph": "▦",
+    "dark": false,
+    "pair": "crt",
+    "swatch": [
+      "#087d28",
+      "#0a7b29",
+      "#0a7b29",
+      "#0a7b29",
+      "#0a7b28",
+      "#0a7b28"
+    ]
+  },
+  {
+    "name": "matrix",
+    "label": "Matrix",
+    "group": "Terminal",
+    "glyph": "⌁",
+    "dark": true,
+    "pair": "matrix-light",
+    "swatch": [
+      "#86ffab",
+      "#2fee6a",
+      "#63f28f",
+      "#7bf4a0",
+      "#92f6b1",
+      "#c2fad3"
+    ]
+  },
+  {
+    "name": "matrix-light",
+    "label": "Matrix Light",
+    "group": "Terminal",
+    "glyph": "⌁",
+    "dark": false,
+    "pair": "matrix",
+    "swatch": [
+      "#087d2c",
+      "#0a7b2d",
+      "#0a7b2d",
+      "#0a7b2d",
+      "#0a7b2d",
+      "#0a7b2c"
+    ]
+  },
+  {
+    "name": "teletext",
+    "label": "Teletext",
+    "group": "Terminal",
+    "glyph": "⌗",
+    "dark": true,
+    "pair": "teletext-light",
+    "swatch": [
+      "#ffe800",
+      "#b8a90f",
+      "#ecd813",
+      "#eedc2b",
+      "#f0e042",
+      "#f4e871"
+    ]
+  },
+  {
+    "name": "teletext-light",
+    "label": "Teletext Light",
+    "group": "Terminal",
+    "glyph": "⌗",
+    "dark": false,
+    "pair": "teletext",
+    "swatch": [
+      "#736907",
+      "#716809",
+      "#716809",
+      "#716809",
+      "#716809",
+      "#726809"
+    ]
+  }
+]
