@@ -153,6 +153,7 @@ secret manager).
 | [docs/MVP-SCOPE.md](docs/MVP-SCOPE.md) | The scope fence: the smallest useful version of each application, and what is explicitly not required |
 | [docs/POST-MVP-ROADMAP.md](docs/POST-MVP-ROADMAP.md) | Phased post-MVP roadmap, each phase independently gated |
 | [docs/COREFORGE-INTEGRATION.md](docs/COREFORGE-INTEGRATION.md) | How the suite layers over `mg-coreforge` without duplicating its curriculum or planning authority |
+| [docs/GEISTOS-PACKAGING.md](docs/GEISTOS-PACKAGING.md) | Prep notes for `geistos`, a future Arch package bundling the suite with the Hyprland/Quickshell integration |
 
 `mg-calr` and `mg-vaultr` additionally carry per-feature specs and blind review
 scorecards under their own `docs/specs/` and `docs/reviews/`.
