@@ -71,8 +71,10 @@ Everything else resolves through `$HOME` and needs no editing.
   suite CLIs. They resolve binaries through `MG_*_BIN` environment variables
   with development-build defaults. A distribution has to ship them and point
   those defaults at installed paths.
-- **A license.** Four of the six suite repositories declare none, which blocks
-  distribution outright. See `mg-suite/docs/GEISTOS-PACKAGING.md`.
 
 `mg-suite/docs/GEISTOS-PACKAGING.md` carries the full packaging notes: build
 requirements, the constraints a packager hits, and the open questions.
+
+## License
+
+MIT. See `LICENSE`.
