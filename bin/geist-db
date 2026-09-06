@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# Author: Jeff
+# Date: 2026-09-05
+# Description: Resolve the PostgreSQL cluster the Geist suite should use
+# Notes: Prefers a cluster the machine already runs. Falls back to a private
+#        per-user cluster so nobody has to run initdb by hand. Never starts,
+#        stops, or writes to a system cluster
+set -euo pipefail
+
+# Where a private cluster lives when this script has to create one
+data_home="${XDG_DATA_HOME:-${HOME}/.local/share}"
+PRIVATE_DATA="${GEIST_PGDATA:-${data_home}/geist/pg}"
+PRIVATE_SOCKET="${GEIST_PGSOCKET:-${XDG_RUNTIME_DIR:-/tmp}/geist-pg}"
+
+# The system cluster's conventional socket directory on Arch and Debian
+SYSTEM_SOCKET="${GEIST_SYSTEM_PGSOCKET:-/run/postgresql}"
+
+# Section: cluster discovery
+
+# Report whether a cluster answers on one socket directory
+# Names the postgres database explicitly: without it pg_isready probes a database
+# named after the user, and every check logs a FATAL in the server journal
+cluster_is_up() {
+    local socket="$1"
+    pg_isready -q -h "$socket" -d postgres >/dev/null 2>&1
+}
+
+# Choose the socket directory every application should connect through
+resolve_socket() {
+    # An explicit override wins, and is never second-guessed
+    if [[ -n "${GEIST_PGHOST:-}" ]]; then
+        printf '%s\n' "${GEIST_PGHOST}"
+        return 0
+    fi
+    # A cluster the machine already runs is preferred: adopting it means one
+    # server, one backup story, and no duplicate shared memory
+    if cluster_is_up "$SYSTEM_SOCKET"; then
+        printf '%s\n' "$SYSTEM_SOCKET"
+        return 0
+    fi
+    printf '%s\n' "$PRIVATE_SOCKET"
+}
+
+# Report which kind of cluster resolve_socket picked
+resolve_kind() {
+    local socket
+    socket="$(resolve_socket)"
+    if [[ -n "${GEIST_PGHOST:-}" ]]; then
+        printf 'override\n'
+    elif [[ "$socket" == "$SYSTEM_SOCKET" ]]; then
+        printf 'system\n'
+    else
+        printf 'private\n'
+    fi
+}
+
+# Section: private cluster lifecycle
+
+# Create the private cluster on first use, owned by this user alone
+init_private() {
+    if [[ -s "${PRIVATE_DATA}/PG_VERSION" ]]; then
+        return 0
+    fi
+    mkdir -p "$(dirname "$PRIVATE_DATA")"
+    # initdb refuses a non-empty directory, and demands 0700
+    mkdir -p "$PRIVATE_DATA"
+    chmod 700 "$PRIVATE_DATA"
+    printf 'creating a private cluster at %s\n' "$PRIVATE_DATA" >&2
+    # Trust auth is safe here because the cluster is reachable only through a
+    # 0700 socket directory owned by this user: there is no TCP listener at all
+    initdb --pgdata="$PRIVATE_DATA" --auth-local=trust --auth-host=reject \
+        --encoding=UTF8 --locale=C.UTF-8 >/dev/null
+}
+
+# Start the private cluster in the foreground for systemd to supervise
+exec_private() {
+    init_private
+    mkdir -p "$PRIVATE_SOCKET"
+    chmod 700 "$PRIVATE_SOCKET"
+    # listen_addresses='' means no TCP socket is opened at all, so this cluster
+    # cannot collide with the system one on port 5432 and exposes no network
+    exec postgres -D "$PRIVATE_DATA" -k "$PRIVATE_SOCKET" -c listen_addresses=''
+}
+
+# Section: commands
+
+cmd_status() {
+    local socket kind
+    socket="$(resolve_socket)"
+    kind="$(resolve_kind)"
+    if cluster_is_up "$socket"; then
+        printf '%s cluster up at %s\n' "$kind" "$socket"
+    else
+        printf '%s cluster down at %s\n' "$kind" "$socket"
+        return 1
+    fi
+}
+
+cmd_socket() { resolve_socket; }
+
+cmd_url() {
+    local db="${1:-}"
+    [[ -n "$db" ]] || { printf 'usage: geist-db url <database>\n' >&2; exit 64; }
+    printf 'postgresql:///%s?host=%s\n' "$db" "$(resolve_socket)"
+}
+
+cmd_start() {
+    if cluster_is_up "$(resolve_socket)"; then
+        cmd_status
+        return 0
+    fi
+    if [[ "$(resolve_kind)" != "private" ]]; then
+        printf 'the %s cluster is down; this script does not start it\n' "$(resolve_kind)" >&2
+        return 69
+    fi
+    systemctl --user start geist-postgres.service
+    for _ in $(seq 1 50); do
+        cluster_is_up "$PRIVATE_SOCKET" && { cmd_status; return 0; }
+        sleep 0.1
+    done
+    printf 'private cluster did not become ready\n' >&2
+    return 69
+}
+
+cmd_stop() {
+    # Only ever the private cluster: a system cluster is not this script's to stop
+    if [[ "$(resolve_kind)" != "private" ]]; then
+        printf 'refusing to stop the %s cluster\n' "$(resolve_kind)" >&2
+        return 69
+    fi
+    systemctl --user stop geist-postgres.service
+}
+
+# Create one database if it is absent, so first run needs no manual psql
+cmd_ensure() {
+    local db="${1:-}"
+    [[ -n "$db" ]] || { printf 'usage: geist-db ensure <database>\n' >&2; exit 64; }
+    local socket
+    socket="$(resolve_socket)"
+    cluster_is_up "$socket" || { printf 'no cluster at %s\n' "$socket" >&2; return 69; }
+    if psql -h "$socket" -d postgres -tAc \
+        "SELECT 1 FROM pg_database WHERE datname = '${db}'" | grep -q 1; then
+        printf '%s exists\n' "$db"
+    else
+        createdb -h "$socket" "$db"
+        printf '%s created\n' "$db"
+    fi
+}
+
+case "${1:-status}" in
+    status) cmd_status ;;
+    socket) cmd_socket ;;
+    url)    shift; cmd_url "$@" ;;
+    start)  cmd_start ;;
+    stop)   cmd_stop ;;
+    ensure) shift; cmd_ensure "$@" ;;
+    # Called by the systemd unit; not intended to be run by hand
+    exec-private) exec_private ;;
+    *)
+        printf 'usage: geist-db {status|socket|url <db>|start|stop|ensure <db>}\n' >&2
+        exit 64
+        ;;
+esac

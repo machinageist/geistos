@@ -1,0 +1,44 @@
+[Unit]
+Description=Private PostgreSQL cluster for the Geist suite
+Documentation=https://github.com/machinageist/geistos
+# Only ever supervises the per-user cluster under $XDG_DATA_HOME/geist/pg.
+# A system cluster, if the machine runs one, is preferred and left alone —
+# geist-db decides which of the two the applications connect to.
+
+[Service]
+Type=notify
+# ReadWritePaths below refuses to set up its mount namespace if the directory is
+# absent, which is every first run. The + prefix runs this outside the sandbox,
+# so the path exists by the time the sandbox is built.
+ExecStartPre=+/bin/mkdir -p %h/.local/share/geist
+ExecStart=%h/geistos/bin/geist-db exec-private
+# postgres reloads configuration on SIGHUP and shuts down cleanly on SIGINT
+ExecReload=/bin/kill -HUP $MAINPID
+KillSignal=SIGINT
+KillMode=mixed
+TimeoutStartSec=120
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=2
+
+# The cluster answers on a 0700 socket directory and opens no TCP listener,
+# so it needs nothing beyond its own data and runtime directories.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/share/geist
+RuntimeDirectory=geist-pg
+RuntimeDirectoryMode=0700
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictRealtime=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=default.target

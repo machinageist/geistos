@@ -11,8 +11,10 @@ exist yet.
 
 ```text
 geistos/
+  bin/geist-db        Resolves the PostgreSQL cluster the suite connects to
   config/hypr/        Hyprland: keybindings, autostart, look and feel, lock, idle
   config/quickshell/  The shell: bar, launcher, panels, services, 38 themes
+  systemd/            User units — currently the private PostgreSQL cluster
   mg-suite/           The application suite — a separate repository
 ```
 
@@ -42,11 +44,38 @@ The Geist panel is the suite's face on the desktop: per-application status, a
 launcher for each CLI, and an explicit "Refresh todo agenda" action that runs the
 mg-remindr to mg-calr projection bridge.
 
+## Database
+
+Every authoritative application stores its data in PostgreSQL. You do not have to
+set up a server: `bin/geist-db` resolves one.
+
+```sh
+bin/geist-db status          # which cluster would be used, and whether it is up
+bin/geist-db url mg_calr     # the connection URL an application should use
+bin/geist-db start           # bring up the private cluster if there is no other
+bin/geist-db ensure mg_calr  # create that database if it is absent
+```
+
+Resolution order is `GEIST_PGHOST`, then a cluster the machine already runs at
+`/run/postgresql`, then a private per-user cluster. The private cluster lives in
+`$XDG_DATA_HOME/geist/pg`, is created by `initdb` on first start, and listens on a
+`0700` unix socket with `listen_addresses` empty — it opens no TCP port, so it
+cannot collide with a system cluster on 5432 and is not reachable from the network.
+
+`systemd/geist-postgres.service` supervises it. It only ever manages the private
+cluster; a system cluster is preferred and never started, stopped, or written to.
+
+```sh
+cp systemd/geist-postgres.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now geist-postgres.service   # only if you want it always up
+```
+
 ## Requirements
 
 Hyprland, Quickshell, ghostty, python3, and a Nerd Font for the glyphs. The
-suite adds a Rust toolchain at 1.85 or newer and, for `mg-calr` and
-`mg-remindr`, a user-provisioned PostgreSQL server.
+suite adds a Rust toolchain at 1.85 or newer and the `postgresql` package — for
+its binaries, not for a server you have to configure. See Database above.
 
 ## Configuration notes
 
