@@ -90,6 +90,11 @@ checkout in two places:
 
 Everything else resolves through `$HOME` and needs no editing.
 
+## Where this stands
+
+[docs/HANDOFF.md](docs/HANDOFF.md) records what has been built, the bugs found
+along the way, and what to pick up next.
+
 ## Not here yet
 
 - **An installer.** `dotfiles/scripts/install.sh` has the symlink-with-backup
