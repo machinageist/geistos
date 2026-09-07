@@ -6,7 +6,7 @@ Notes: Written at the end of a long session. State claims here were checked
        against the machine, not recalled
 -->
 
-# Handoff — 2026-09-07
+# Handoff — 2026-09-07 (updated)
 
 ## Where this stands
 
@@ -14,17 +14,17 @@ Nine repositories, all clean and pushed. `geistos` is the umbrella holding the
 desktop configuration; `mg-suite` sits inside it as its own repository holding
 six applications, each also its own repository.
 
-| Repository | Branch | Commits | Remote |
-|---|---|---|---|
-| `geistos` | main | 4 | github.com/machinageist/geistos |
-| `mg-suite` | main | 5 | …/mg-suite |
-| `mg-briefr` | main + `postgres-port` | 12 | …/mg-briefr |
-| `mg-calr` | main | 56 | …/mg-calr |
-| `mg-contactr` | main | 8 | …/mg-contactr |
-| `mg-planr` | main | 12 | …/mg-planr |
-| `mg-remindr` | main | 29 | …/mg-remindr |
-| `mg-vaultr` | main | 16 | …/mg-vaultr |
-| `dotfiles` | `quickshell-shell` | 48 | …/dotfiles |
+| Repository | Branch | Storage / note |
+|---|---|---|
+| `geistos` | `main` | desktop config, `geist-db`, the suite pipe test |
+| `mg-suite` | `main` | suite docs only; the applications are ignored here |
+| `mg-briefr` | `main` | SQLite — port started on `postgres-port`, does not compile |
+| `mg-calr` | `main` | PostgreSQL |
+| `mg-contactr` | `main` | encrypted local files — port not started |
+| `mg-planr` | `main` | PostgreSQL |
+| `mg-remindr` | `main` | PostgreSQL |
+| `mg-vaultr` | `main` | Markdown files + local index |
+| `dotfiles` | `quickshell-shell` | Quickshell shell and the geist-* bridges |
 
 All private. `dotfiles` work sits on a branch, not merged to its `main`.
 
@@ -70,6 +70,13 @@ construction. The test is proven to fail when pointed at a broken consumer.
 **Adoption started.** mg-remindr holds four real commitments (the applications
 floor, the RHCSA baseline gate, D-01, D-02) and they reach the calendar agenda.
 
+**Editing, on both cards.** Double-clicking a calendar event opens an editor for
+its title, day, time and length — `mg-calr event edit` had existed all along with
+an optimistic-lock version the card was already carrying and ignoring. Reminders
+had **no edit anywhere**, not even in the CLI: changing a due date meant destroying
+the reminder and its history. `human::amend` now sits beside `close` and `reopen`,
+and a matching card opens on double-click.
+
 ## Bugs found and fixed
 
 Worth knowing because each says something about the system:
@@ -80,7 +87,14 @@ Worth knowing because each says something about the system:
   taken" and refused anything over 24 hours old. A quiet todo list went stale and
   **re-syncing could not fix it**. Freshness is now measured from when this machine
   last accepted a projection.
-- **A migration-ledger race in mg-calr** (found, not yet fixed — see below).
+- **A migration-ledger race in mg-calr**, since fixed. The ledger bootstrap ran on
+  a bare connection before the transaction opened, so its
+  `CREATE TABLE IF NOT EXISTS` sat outside the advisory lock; concurrent identical
+  DDL is not race-safe and the loser got `42P07`. Fixing it made parallel test runs
+  possible, which immediately exposed **a second problem the single-threaded
+  workaround had masked**: two tests assumed a quiet database, and a sibling
+  creating events between two exports made a determinism check fail for real. Both
+  now take their own disposable database.
 - **The suite root was hardcoded in eight places**, which broke the desktop twice
   in one day. One resolver now, honouring `GEIST_ROOT`.
 - **`CARGO_BIN_EXE_*` is an absolute path baked at compile time.** Any directory
@@ -92,14 +106,7 @@ Worth knowing because each says something about the system:
 
 ## What to work on next
 
-Ordered as decided. Items B–D are small and unblock clarity; E–G are the substance.
-
-**B — the migration race.** `mg-calr/src/storage.rs:728` calls
-`ensure_migration_table()` on the raw client *before* the transaction opens, so its
-`CREATE TABLE IF NOT EXISTS` runs outside the advisory lock. Concurrent identical
-DDL is not race-safe; the loser gets `42P07`. Move the bootstrap inside the lock,
-copying `mg-remindr/src/storage.rs:401-475`, which already does it correctly. Add a
-concurrent-migrate test — single-threaded runs hide this.
+Ordered as decided. B is done. C and D are small and unblock clarity; E–G are the substance.
 
 **C — prune the vault specs.** Delete branches D, E, F (the editor stack) and N, O
 (plugins, AI adapters) with their scorecards; recoverable from history. Keep I, J,
@@ -125,10 +132,6 @@ one corrupted line makes the entire store unreadable.
 
 ### Also open, from a survey of capability the GUI never exposed
 
-- **mg-remindr has no edit at all** — not in the bridge, not in the CLI. Changing a
-  due date means destroying the item and its history. This is the only one that is
-  a genuine capability hole rather than missing plumbing, and it is in the
-  application now being used daily.
 - **Vault search** exists (`mg-vault search`) and is unreachable from the desktop.
 - **Vault note read** likewise.
 - **Calendar `.ics` import** is CLI-only.
