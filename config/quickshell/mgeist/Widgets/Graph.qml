@@ -17,8 +17,14 @@ Canvas {
     property real lineWidth: 1.5
     property bool barMode: false
     property var barColors: []
-    // Draw a faint baseline grid
     property bool grid: true
+    // Optional Cartesian plotting mode. Existing sparkline consumers leave this false.
+    property bool plotMode: false
+    property var points: []
+    property real xMin: -10
+    property real xMax: 10
+    property real yMin: -10
+    property real yMax: 10
 
     readonly property real peak: {
         if (root.maxValue > 0) return root.maxValue;
@@ -31,14 +37,54 @@ Canvas {
     }
 
     onValuesChanged: requestPaint()
+    onPointsChanged: requestPaint()
     onStrokeChanged: requestPaint()
     onBarModeChanged: requestPaint()
+    onPlotModeChanged: requestPaint()
     onBarColorsChanged: requestPaint()
+    onXMinChanged: requestPaint()
+    onXMaxChanged: requestPaint()
+    onYMinChanged: requestPaint()
+    onYMaxChanged: requestPaint()
 
     onPaint: {
         const ctx = getContext("2d");
         ctx.reset();
         ctx.clearRect(0, 0, width, height);
+
+        if (root.plotMode) {
+            const xSpan = Math.max(0.000001, root.xMax - root.xMin);
+            const ySpan = Math.max(0.000001, root.yMax - root.yMin);
+            const xFor = x => (x - root.xMin) / xSpan * width;
+            const yForPlot = y => height - (y - root.yMin) / ySpan * height;
+            ctx.strokeStyle = Qt.alpha(root.stroke, 0.14);
+            ctx.lineWidth = 1;
+            for (let i = 1; i < 10; i++) {
+                const gx = width * i / 10;
+                const gy = height * i / 10;
+                ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, height); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(width, gy); ctx.stroke();
+            }
+            ctx.strokeStyle = Qt.alpha(root.stroke, 0.55);
+            const axisX = xFor(0);
+            const axisY = yForPlot(0);
+            if (axisX >= 0 && axisX <= width) { ctx.beginPath(); ctx.moveTo(axisX, 0); ctx.lineTo(axisX, height); ctx.stroke(); }
+            if (axisY >= 0 && axisY <= height) { ctx.beginPath(); ctx.moveTo(0, axisY); ctx.lineTo(width, axisY); ctx.stroke(); }
+            ctx.beginPath();
+            let drawing = false;
+            for (const point of root.points) {
+                if (!point || point.y === null || !Number.isFinite(point.y)) { drawing = false; continue; }
+                const px = xFor(point.x);
+                const py = yForPlot(point.y);
+                if (px < 0 || px > width) { drawing = false; continue; }
+                if (!drawing) { ctx.moveTo(px, py); drawing = true; }
+                else ctx.lineTo(px, py);
+            }
+            ctx.strokeStyle = root.stroke;
+            ctx.lineWidth = root.lineWidth + 0.5;
+            ctx.stroke();
+            return;
+        }
 
         if (root.grid) {
             ctx.strokeStyle = Qt.alpha(root.stroke, 0.12);

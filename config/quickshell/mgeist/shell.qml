@@ -78,6 +78,10 @@ ShellRoot {
         onKeybindingsRequested: keybindings.show()
     }
 
+    CalculatorPanel {
+        id: calculator
+    }
+
     // Popups render per screen, like the bar
     Variants {
         model: Quickshell.screens
@@ -180,6 +184,21 @@ ShellRoot {
             const c = {};
             for (const b of Keybindings.binds) c[b.group] = (c[b.group] || 0) + 1;
             return Keybindings.groupOrder.filter(g => c[g]).map(g => `${g}\t${c[g]}`).join("\n");
+        }
+    }
+
+    IpcHandler {
+        target: "calculator"
+
+        function open(): void { calculator.open = true; }
+        function close(): void { calculator.close(); }
+        function toggle(): void { calculator.toggle(); }
+        function setMode(name: string): void { calculator.mode = name; calculator.calculate(); }
+        function setExpression(value: string): void { calculator.expression = value; calculator.calculate(); }
+        function status(): string {
+            return JSON.stringify({open: calculator.open, mode: calculator.mode,
+                expression: calculator.expression, points: calculator.graphPoints.length,
+                result: calculator.result, error: calculator.error});
         }
     }
 
