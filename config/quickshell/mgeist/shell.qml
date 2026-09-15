@@ -82,6 +82,10 @@ ShellRoot {
         id: calculator
     }
 
+    LookupPanel {
+        id: lookup
+    }
+
     // Popups render per screen, like the bar
     Variants {
         model: Quickshell.screens
@@ -199,6 +203,21 @@ ShellRoot {
             return JSON.stringify({open: calculator.open, mode: calculator.mode,
                 expression: calculator.expression, points: calculator.graphPoints.length,
                 result: calculator.result, error: calculator.error});
+        }
+    }
+
+    IpcHandler {
+        target: "lookup"
+
+        function open(kind: string, word: string): void {
+            lookup.lookup(kind, word);
+            lookup.open = true;
+        }
+        function close(): void { lookup.close(); }
+        function status(): string {
+            return JSON.stringify({open: lookup.open, type: lookup.lookupType,
+                query: lookup.query, busy: lookup.busy, error: lookup.error,
+                body: lookup.body});
         }
     }
 

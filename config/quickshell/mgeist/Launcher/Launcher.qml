@@ -92,10 +92,8 @@ PopupPanel {
         const sourceActions = q === "" ? Commands.actions.slice(0, 6) : Commands.actions;
         const actions = sourceActions.map(action => Providers.action(action));
         const converter = Providers.unitConversion(query.trim(), MathEngine);
-        // Lexical lookup remains a separate package slice until its panel and
-        // shell IPC are ported together. Calculator and conversion are safe
-        // to expose now because their activation path is self-contained.
-        const sources = [converter, root.rustCalculatorResult, ...actions, ...applications].filter(entry => entry !== null);
+        const lookup = Providers.lexicalLookup(query.trim());
+        const sources = [lookup, converter, root.rustCalculatorResult, ...actions, ...applications].filter(entry => entry !== null);
         return Providers.search(sources, q);
     }
 
