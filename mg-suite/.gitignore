@@ -3,6 +3,7 @@
 # history. This umbrella repository tracks only suite-level docs, so the
 # applications are ignored here rather than nested or vendored.
 /mg-briefr/
+/mg-calcr/
 /mg-calr/
 /mg-contactr/
 /mg-planr/

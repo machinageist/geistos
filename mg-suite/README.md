@@ -21,6 +21,7 @@ application below is a separate Git repository with its own history and remote.
 | Directory | Binary | Owns | Storage |
 |---|---|---|---|
 | `mg-briefr/` | `mg-brief` | Registered sources, fetched artifacts, CVE records and history, immutable asset observations, provenance | SQLite |
+| `mg-calcr/` | `mg-calcr` | Safe expression evaluation, formatting, and graph sampling for calculator consumers | Stateless |
 | `mg-vaultr/` | `mg-vault`, `mg-vault-indexd` | Notes, concepts, claims, citations, knowledge relationships and revisions | Markdown files; disposable SQLite index |
 | `mg-planr/` | `mg-plan` | Plans, work items, dependencies, acceptance criteria, evidence references, verification records, completion judgments | SQLite |
 | `mg-calr/` | `mg-calr` | Calendars, events, time blocks, recurrence, availability, conflicts, external sync state | PostgreSQL |
