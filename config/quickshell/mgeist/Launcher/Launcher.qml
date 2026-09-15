@@ -6,19 +6,25 @@
 
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import "root:/Theme"
 import "root:/Widgets"
 import "root:/Services"
+import "../Services/LauncherProviders.js" as Providers
+import "../Services/MathEngine.js" as MathEngine
 
 PopupPanel {
     id: root
 
-    cardWidth: 560
-    cardHeight: 420
+    cardWidth: 620
+    cardHeight: 500
     placement: "center"
 
     property string query: ""
     property int selected: 0
+    property var rustCalculatorResult: null
+    property bool rustCalculatorBusy: false
+    readonly property string calcrBinary: Quickshell.env("MG_CALCR_BIN") || `${Quickshell.env("HOME")}/geistos/mg-suite/mg-calcr/target/debug/mg-calcr`
 
     signal keybindingsRequested()
 
@@ -26,67 +32,87 @@ PopupPanel {
         if (open) {
             query = "";
             selected = 0;
+            rustCalculatorResult = null;
+            rustCalculatorBusy = false;
             Qt.callLater(() => input.forceActiveFocus());
         }
     }
 
-    // Rank entries by where the query hits: prefix beats word-start beats substring
-    function score(entry, q) {
-        if (q === "") return 0;
-
-        const name = entry.name.toLowerCase();
-        const generic = (entry.genericName || "").toLowerCase();
-        const keywords = (entry.keywords || []).join(" ").toLowerCase();
-
-        if (name.startsWith(q)) return 100 - name.length * 0.01;
-        if (name.split(/[\s-]/).some(w => w.startsWith(q))) return 80;
-        if (name.includes(q)) return 60;
-        if (generic.includes(q)) return 40;
-        if (keywords.includes(q)) return 20;
-        return -1;
+    Timer {
+        id: rustCalculatorTimer
+        interval: 120
+        repeat: false
+        onTriggered: root.requestRustCalculator()
     }
 
+    Process {
+        id: rustCalculatorProcess
+        command: []
+        stdout: StdioCollector {
+            onStreamFinished: {
+                if (!root.rustCalculatorBusy) return;
+                try {
+                    const data = JSON.parse(String(text));
+                    root.rustCalculatorResult = data.error ? null : Providers.calculatorResult(root.query.trim(), data.formatted);
+                } catch (e) {
+                    root.rustCalculatorResult = null;
+                }
+                root.rustCalculatorBusy = false;
+            }
+        }
+        onExited: code => {
+            if (code !== 0 && root.rustCalculatorBusy) {
+                root.rustCalculatorBusy = false;
+                root.rustCalculatorResult = null;
+            }
+        }
+    }
+
+    function requestRustCalculator() {
+        const expression = root.query.trim();
+        root.rustCalculatorResult = null;
+        if (expression === "") {
+            root.rustCalculatorBusy = false;
+            return;
+        }
+        root.rustCalculatorBusy = true;
+        if (rustCalculatorProcess.running) rustCalculatorProcess.running = false;
+        rustCalculatorProcess.command = [root.calcrBinary, "evaluate", expression, "--json"];
+        rustCalculatorProcess.running = true;
+    }
+
+    onQueryChanged: rustCalculatorTimer.restart()
+
+    // Provider-specific search stays outside the launcher presentation.
     readonly property var results: {
         const q = query.trim().toLowerCase();
         const applications = DesktopEntries.applications.values
             .filter(entry => !entry.noDisplay)
-            .map(entry => ({
-                kind: "application",
-                name: entry.name,
-                genericName: entry.genericName || "",
-                comment: entry.comment || "",
-                keywords: entry.keywords || [],
-                icon: entry.icon,
-                entry: entry
-            }));
+            .map(entry => Providers.application(entry));
         const sourceActions = q === "" ? Commands.actions.slice(0, 6) : Commands.actions;
-        const actions = sourceActions.map(action => ({
-            kind: "action",
-            name: action.name,
-            genericName: action.subtitle,
-            comment: action.subtitle,
-            keywords: `${action.tags} system action command`.split(" "),
-            glyph: action.glyph,
-            action: action
-        }));
-
-        return [...actions, ...applications]
-            .map(entry => ({ entry: entry, raw: root.score(entry, q) }))
-            .filter(result => result.raw >= 0)
-            .map(result => ({ entry: result.entry, s: result.raw + (result.entry.kind === "action" ? 5 : 0) }))
-            .sort((a, b) => b.s - a.s || a.entry.name.localeCompare(b.entry.name))
-            .slice(0, 60)
-            .map(result => result.entry);
+        const actions = sourceActions.map(action => Providers.action(action));
+        const converter = Providers.unitConversion(query.trim(), MathEngine);
+        // Lexical lookup remains a separate package slice until its panel and
+        // shell IPC are ported together. Calculator and conversion are safe
+        // to expose now because their activation path is self-contained.
+        const sources = [converter, root.rustCalculatorResult, ...actions, ...applications].filter(entry => entry !== null);
+        return Providers.search(sources, q);
     }
 
-    // Run the highlighted application or system action and dismiss
+    // Run the highlighted application, system action, or calculator result.
     function launch(item) {
         if (!item) return;
-
-        if (item.kind === "action") Commands.run(item.action);
-        else if (item.entry.runInTerminal) Quickshell.execDetached(["ghostty", "-e", ...item.entry.command]);
-        else Quickshell.execDetached(item.entry.command);
-
+        if (item.kind === "calculator" || item.kind === "converter") {
+            Quickshell.clipboardText = item.value;
+        } else if (item.kind === "lookup") {
+            Quickshell.execDetached(["qs", "-c", "mgeist", "ipc", "call", "lookup", "open", item.lookupType, item.lookupQuery]);
+        } else if (item.kind === "action") {
+            Commands.run(item.action);
+        } else if (item.entry.runInTerminal) {
+            AppLaunch.run(["ghostty", "-e", ...item.entry.command]);
+        } else {
+            AppLaunch.run(item.entry.command);
+        }
         root.close();
     }
 
@@ -167,11 +193,18 @@ PopupPanel {
             }
         }
 
+        Row {
+            width: parent.width
+            spacing: 8
+            BarText { text: `${root.results.length} results`; color: Theme.muted; font.pixelSize: Theme.fontSize - 1 }
+            BarText { text: root.query.trim() === "" ? "Applications and actions" : `Searching for “${root.query.trim()}”`; color: Theme.faint; font.pixelSize: Theme.fontSize - 1; elide: Text.ElideRight; width: parent.width - 90 }
+        }
+
         // ── Results ──────────────────────────────────────────
         ListView {
             id: list
             width: parent.width
-            height: root.cardHeight - 38 - root.padding * 2 - 10
+            height: root.cardHeight - 76 - root.padding * 2 - 10
             clip: true
             model: root.results
             currentIndex: root.selected
@@ -208,7 +241,7 @@ PopupPanel {
 
                         BarText {
                             anchors.centerIn: parent
-                            visible: row.modelData.kind === "action"
+                            visible: row.modelData.kind !== "application"
                             text: row.modelData.glyph ?? "\uf013"
                             color: Theme.purple
                             font.family: Theme.iconFontFamily
@@ -246,6 +279,22 @@ PopupPanel {
                     onClicked: root.launch(row.modelData)
                 }
             }
+        }
+
+        Item {
+            width: parent.width
+            height: 26
+            visible: root.results.length === 0
+            BarText { anchors.centerIn: parent; text: root.query.trim() === "" ? "No launchable entries" : "No matching applications or actions"; color: Theme.muted }
+        }
+
+        Row {
+            width: parent.width
+            spacing: 12
+            BarText { text: "↑↓ select"; color: Theme.faint; font.pixelSize: Theme.fontSize - 1 }
+            BarText { text: "Enter launch"; color: Theme.faint; font.pixelSize: Theme.fontSize - 1 }
+            BarText { text: "Esc close"; color: Theme.faint; font.pixelSize: Theme.fontSize - 1 }
+            BarText { text: "? shortcuts"; color: Theme.faint; font.pixelSize: Theme.fontSize - 1 }
         }
     }
 }
