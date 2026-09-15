@@ -13,3 +13,5 @@
 # Python bytecode from any tooling added later
 __pycache__/
 *.pyc
+.sessions
+qs-briefs
