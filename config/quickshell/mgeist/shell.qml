@@ -406,6 +406,7 @@ ShellRoot {
         function current(): string { return Wallpaper.current; }
         function count(): int { return Wallpaper.count; }
         function dir(): string { return Wallpaper.dir; }
+        function restart(): void { Wallpaper.restart(); }
     }
 
     IpcHandler {

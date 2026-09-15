@@ -43,6 +43,14 @@ hl.bind(mainMod .. " + DOWN",  hl.dsp.focus({ direction = "down" }),  { descript
 hl.bind(mainMod .. " + UP",    hl.dsp.focus({ direction = "up" }),    { description = "Focus window up" })
 hl.bind(mainMod .. " + RIGHT", hl.dsp.focus({ direction = "right" }), { description = "Focus window right" })
 
+-- Move the active window symmetrically with SHIFT + arrows. Focus keeps the
+-- bare arrows; movement is the same modifier with SHIFT, so the two operations
+-- are discoverable as a pair and do not collide with workspace number moves.
+hl.bind(mainMod .. " + SHIFT + LEFT",  hl.dsp.window.move({ direction = "left" }),  { description = "Move window left" })
+hl.bind(mainMod .. " + SHIFT + DOWN",  hl.dsp.window.move({ direction = "down" }),  { description = "Move window down" })
+hl.bind(mainMod .. " + SHIFT + UP",    hl.dsp.window.move({ direction = "up" }),    { description = "Move window up" })
+hl.bind(mainMod .. " + SHIFT + RIGHT", hl.dsp.window.move({ direction = "right" }), { description = "Move window right" })
+
 hl.bind("ALT + TAB",         hl.dsp.window.cycle_next(),                { description = "Focus next window" })
 hl.bind("ALT + SHIFT + TAB", hl.dsp.window.cycle_next({ next = false }), { description = "Focus previous window" })
 
@@ -103,6 +111,9 @@ hl.bind(mainMod .. " + CTRL + L", hl.dsp.exec_cmd("hyprlock"), { description = "
 hl.bind(mainMod .. " + CTRL + B",
     hl.dsp.exec_cmd("systemctl --user restart quickshell-mgeist.service"),
     { description = "Restart shell" })
+hl.bind(mainMod .. " + CTRL + SHIFT + W",
+    hl.dsp.exec_cmd("qs -c mgeist ipc call wallpaper restart"),
+    { description = "Restart wallpaper service" })
 
 ---------------
 ---- MEDIA ----

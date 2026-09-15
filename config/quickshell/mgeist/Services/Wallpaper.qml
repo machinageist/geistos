@@ -18,6 +18,8 @@ Singleton {
     id: root
 
     readonly property string dir: `${Quickshell.env("HOME")}/pictures/wallpaper`
+    readonly property string home: Quickshell.env("HOME")
+    readonly property string lockLink: `${root.home}/.cache/geistos-lock-wallpaper`
 
     property var files: []
     property string current: ""
@@ -82,7 +84,17 @@ Singleton {
             Quickshell.execDetached(["hyprctl", "hyprpaper", "wallpaper", `${m.name},${path}`]);
 
         root.current = path;
+        // Hyprlock reads its background when it starts. Keep its configured path
+        // stable and update the target through the same wallpaper event instead
+        // of adding a second watcher or source of truth.
+        Quickshell.execDetached(["mkdir", "-p", `${root.home}/.cache`]);
+        Quickshell.execDetached(["ln", "-sfn", path, root.lockLink]);
         stateFile.setText(JSON.stringify({ wallpaper: path }, null, 2));
+    }
+
+    function restart() {
+        Quickshell.execDetached(["sh", "-c", "pkill -x hyprpaper 2>/dev/null; exec hyprpaper"]);
+        Qt.callLater(() => { if (root.current !== "") root.apply(root.current); });
     }
 
     // Step through the library in order
@@ -101,7 +113,7 @@ Singleton {
 
     FileView {
         id: stateFile
-        path: `${Quickshell.statePath("wallpaper.json")}`
+        path: Quickshell.statePath("wallpaper.json")
         printErrors: false
 
         onLoaded: {

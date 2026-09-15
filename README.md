@@ -93,7 +93,8 @@ Everything else resolves through `$HOME` and needs no editing.
 ## Where this stands
 
 [docs/HANDOFF.md](docs/HANDOFF.md) records what has been built, the bugs found
-along the way, and what to pick up next.
+along the way, and what to pick up next. [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md)
+records the global window, panel, session, and lifecycle controls.
 
 ## Not here yet
 
