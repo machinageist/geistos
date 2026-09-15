@@ -12,10 +12,12 @@ import Quickshell
 import Quickshell.Hyprland
 import Quickshell.Wayland
 import "root:/Theme"
+import "root:/Services"
 
 WlrLayershell {
     id: root
 
+    readonly property var inspectionBounds: ({x:card.x, y:card.y, width:card.width, height:card.height, windowWidth:root.width, windowHeight:root.height, contentHeight:body.childrenRect.height, bodyHeight:body.height})
     property bool open: false
     property int cardWidth: 560
     // 0 sizes the card to its content
@@ -59,7 +61,11 @@ WlrLayershell {
     // Grab focus once the surface exists so typing works without a click
     onOpenChanged: {
         if (open) {
+            PanelState.activate(root);
             Qt.callLater(() => scope.forceActiveFocus());
+        } else {
+            PanelState.release(root);
+            root.screen = Qt.binding(() => Quickshell.screens.find(s => s.name === Hyprland.focusedMonitor?.name) || Quickshell.screens[0]);
         }
         root.openedChanged();
     }
@@ -73,6 +79,13 @@ WlrLayershell {
     function show() {
         root.followFocus();
         root.open = true;
+    }
+
+    // Explicit source screen for bar clicks on a non-focused output.
+    function toggleOn(output) {
+        const wasOpenHere = root.open && root.screen === output;
+        root.screen = output;
+        root.open = !wasOpenHere;
     }
 
     // Flip the panel's state
