@@ -19,7 +19,7 @@ direction these notes were asked for, but the two are not the same product.
 
 ## What has to ship
 
-Seven repositories, six of them Rust applications and one config tree.
+Eight repositories, seven of them Rust applications and one config tree.
 
 | Component | Builds to | Runtime needs |
 |---|---|---|
@@ -29,6 +29,7 @@ Seven repositories, six of them Rust applications and one config tree.
 | `mg-calr` | `mg-calr` | **PostgreSQL server, user-provisioned** |
 | `mg-remindr` | `mg-remindr` | **PostgreSQL server, user-provisioned** |
 | `mg-contactr` | `mg-contacts` | Encrypted local store |
+| `mg-calcr` | `mg-calcr` | No external service; bounded local expression/graph engine |
 | `dotfiles` | config tree | Hyprland, Quickshell, ghostty, python3 |
 
 ## Build
@@ -92,6 +93,10 @@ upgrade that changes interop identity needs that as a migration step.
   between Quickshell and the CLIs. They resolve binaries through `MG_*_BIN`
   environment variables with `~/geistos/mg-suite/...` debug-build defaults — that default
   is a development path and must become the installed path in a package.
+- **Where does `mg-calcr` live?** Both production calculator surfaces currently
+  resolve `MG_CALCR_BIN` or a checkout `target/debug/mg-calcr`. Packaging must ship
+  the pinned release binary and set one installed-path contract; a development
+  artifact is not a distributable runtime dependency.
 - **Versioning.** Seven independently versioned repos, all at 0.1.0. A
   distribution needs one version that pins a set, which is the manifest idea from
   the orchestrator shape.
