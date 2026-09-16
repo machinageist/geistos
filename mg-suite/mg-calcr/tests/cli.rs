@@ -42,3 +42,31 @@ fn graph_json_preserves_requested_samples() {
         .stdout(predicate::str::contains(r#""x":0.0,"#))
         .stdout(predicate::str::contains(r#""y":1.0"#));
 }
+
+#[test]
+fn documented_y_equation_graph_is_machine_readable() {
+    let mut command = Command::cargo_bin("mg-calcr").expect("binary should build");
+    command
+        .args([
+            "sample",
+            "y = x^2",
+            "--minimum=-1",
+            "--maximum=1",
+            "--points=3",
+            "--json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(r#""x":0.0,"#))
+        .stdout(predicate::str::contains(r#""y":0.0"#));
+}
+
+#[test]
+fn graph_cli_rejects_unbounded_point_counts_before_allocation() {
+    let mut command = Command::cargo_bin("mg-calcr").expect("binary should build");
+    command
+        .args(["sample", "x", "--points=5001", "--json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("between two and 5000 points"));
+}

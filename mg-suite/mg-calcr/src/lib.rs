@@ -3,6 +3,8 @@ use std::fmt;
 use serde::Serialize;
 use thiserror::Error;
 
+pub const MAX_GRAPH_POINTS: usize = 5_000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AngleMode {
     Radians,
@@ -479,6 +481,16 @@ fn angle_from_radians(value: f64, angle: AngleMode) -> f64 {
     }
 }
 
+fn graph_expression_source(source: &str) -> &str {
+    let trimmed = source.trim();
+    if let Some((left, right)) = trimmed.split_once('=') {
+        if left.trim().eq_ignore_ascii_case("y") {
+            return right.trim();
+        }
+    }
+    trimmed
+}
+
 /// Evaluate an expression using the supplied angle mode and optional `x` value.
 ///
 /// # Errors
@@ -539,8 +551,8 @@ pub fn format_value(value: f64) -> String {
 ///
 /// # Errors
 ///
-/// Returns a [`CalcError`] when the range is not finite, ordered, or has fewer
-/// than two requested points.
+/// Returns a [`CalcError`] when the range is not finite or ordered, or when the
+/// requested point count is outside `2..=MAX_GRAPH_POINTS`.
 pub fn sample_graph(
     source: &str,
     minimum: f64,
@@ -548,14 +560,19 @@ pub fn sample_graph(
     count: usize,
     angle: AngleMode,
 ) -> Result<Vec<GraphPoint>, CalcError> {
-    if count < 2 || !minimum.is_finite() || !maximum.is_finite() || minimum >= maximum {
+    if !(2..=MAX_GRAPH_POINTS).contains(&count)
+        || !minimum.is_finite()
+        || !maximum.is_finite()
+        || minimum >= maximum
+    {
         return Err(CalcError::Expected {
-            expected: "a valid graph range with at least two points".to_owned(),
+            expected: format!("a valid graph range with between two and {MAX_GRAPH_POINTS} points"),
             position: 0,
         });
     }
+    let source = graph_expression_source(source);
     let denominator = u32::try_from(count - 1).map_err(|_| CalcError::Expected {
-        expected: "a graph with no more than 4,294,967,296 points".to_owned(),
+        expected: format!("a graph with no more than {MAX_GRAPH_POINTS} points"),
         position: 0,
     })?;
     let step = (maximum - minimum) / f64::from(denominator);
@@ -621,5 +638,33 @@ mod tests {
         let points = sample_graph("x^2", -1.0, 1.0, 5, AngleMode::Radians).unwrap();
         assert_eq!(points.len(), 5);
         assert_eq!(points[2].y, Some(0.0));
+    }
+
+    #[test]
+    fn accepts_the_documented_graph_equation_prefix() {
+        let points = sample_graph("Y = x^2", -1.0, 1.0, 3, AngleMode::Radians).unwrap();
+        assert_eq!(
+            points.iter().map(|point| point.y).collect::<Vec<_>>(),
+            vec![Some(1.0), Some(0.0), Some(1.0)]
+        );
+    }
+
+    #[test]
+    fn refuses_impractically_large_graph_allocations() {
+        assert_eq!(
+            sample_graph("x", -1.0, 1.0, MAX_GRAPH_POINTS, AngleMode::Radians)
+                .unwrap()
+                .len(),
+            MAX_GRAPH_POINTS
+        );
+        assert!(sample_graph("x", -1.0, 1.0, 5_001, AngleMode::Radians).is_err());
+    }
+
+    #[test]
+    fn scalar_error_positions_stay_relative_to_the_original_expression() {
+        assert_eq!(
+            evaluate("   1 / 0", EvalOptions::default()),
+            Err(CalcError::DivisionByZero { position: 5 })
+        );
     }
 }
