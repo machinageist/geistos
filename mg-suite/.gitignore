@@ -20,3 +20,13 @@
 .idea/
 .vscode/
 .DS_Store
+
+
+# Added by cargo
+
+/target
+mg-shellr/
+        mg-streamr/
+        mg-terrm/
+mg-streamr/
+mg-terrm/
