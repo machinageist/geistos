@@ -553,5 +553,6 @@ ShellRoot {
             launcher.query = text;
             return launcher.results.slice(0, 10).map(entry => `${entry.kind}\t${entry.name}`).join("\n");
         }
+        function providerStatus(): string { return `query=${MathProvider.query} result=${MathProvider.result === null ? "-" : MathProvider.result}`; }
     }
 }

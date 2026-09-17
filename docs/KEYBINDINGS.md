@@ -5,7 +5,7 @@ The Hyprland bindings are the global authority. Quickshell panels expose the sam
 ## Window management
 
 - `SUPER + H/J/K/L` or `SUPER + arrows`: focus left/down/up/right.
-- `SUPER + SHIFT + arrows`: move the active window left/down/up/right.
+- `SUPER + SHIFT + H/J/K/L`: move the active window left/down/up/right.
 - `SUPER + W`: close the active window.
 - `SUPER + T`: toggle floating.
 - `SUPER + F`: toggle fullscreen.
