@@ -9,6 +9,10 @@
 /mg-planr/
 /mg-remindr/
 /mg-vaultr/
+/mg-feedr/
+/mg-shellr/
+/mg-streamr/
+/mg-terrm/
 
 # Local agent session state
 /.claude/
@@ -25,8 +29,3 @@
 # Added by cargo
 
 /target
-mg-shellr/
-        mg-streamr/
-        mg-terrm/
-mg-streamr/
-mg-terrm/
