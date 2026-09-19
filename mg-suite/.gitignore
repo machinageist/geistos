@@ -13,6 +13,7 @@
 /mg-shellr/
 /mg-streamr/
 /mg-terrm/
+/mg-taskr/
 
 # Local agent session state
 /.claude/
