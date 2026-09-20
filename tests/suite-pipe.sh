@@ -5,15 +5,10 @@
 # Notes: Both sides of this pipe were already covered by unit tests built from
 #        hand-authored fixtures, which agree with each other by construction.
 #        Nothing ran the real binaries into each other, and the shell script
-#        that does it in production had no test at all. This closes both gaps
+#        that does it in production had no test at all. This closes both gaps.
+#        It needed opting into while it created and dropped real databases; a
+#        store is now one file in a temporary directory, so it always runs
 set -euo pipefail
-
-# Opt in, like the per-application database suites, because this creates and
-# drops real databases
-if [[ "${GEIST_RUN_SUITE_TESTS:-}" != "1" ]]; then
-    printf 'skipped: set GEIST_RUN_SUITE_TESTS=1 to run the suite pipe test\n'
-    exit 0
-fi
 
 geistos="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 suite="${GEIST_ROOT:-${geistos}/mg-suite}"
@@ -23,9 +18,6 @@ sync_script="${GEIST_SYNC_SCRIPT:-${HOME}/dotfiles/scripts/geist-sync-todo-proje
 # which is also how the test proves it can detect a broken pipe
 export MG_REMINDR_BIN="${MG_REMINDR_BIN:-${suite}/mg-remindr/target/debug/mg-remindr}"
 export MG_CALR_BIN="${MG_CALR_BIN:-${suite}/mg-calr/target/debug/mg-calr}"
-
-# A database name no human would pick for real data, so cleanup is unambiguous
-TEST_DB="mg_remindr_pipe_test"
 
 failures=0
 checks=0
@@ -66,33 +58,17 @@ done
 [[ -x "$sync_script" ]] || { printf 'missing sync script: %s\n' "$sync_script" >&2; exit 69; }
 
 work="$(mktemp -d)"
-started_cluster="no"
 cleanup() {
     rm -rf -- "$work"
-    [[ -n "${socket:-}" ]] && dropdb -h "$socket" --if-exists "$TEST_DB" >/dev/null 2>&1
-    # Leave the cluster as this test found it
-    [[ "$started_cluster" == "yes" ]] && "${geistos}/bin/geist-db" stop >/dev/null 2>&1
     return 0
 }
 trap cleanup EXIT
 
-# Always the private cluster: this test creates and drops databases, and a
-# system cluster's role may not hold CREATEDB — nor should a test assume it may
-export GEIST_SYSTEM_PGSOCKET=/nonexistent-by-design
-if ! "${geistos}/bin/geist-db" status >/dev/null 2>&1; then
-    "${geistos}/bin/geist-db" start >/dev/null || {
-        printf 'could not start the private cluster\n' >&2; exit 69; }
-    started_cluster="yes"
-fi
-socket="$("${geistos}/bin/geist-db" socket)"
-
 printf 'suite pipe test\n'
 
-# Section: a real producer database
+# Section: a real producer store, in this test's own directory
 
-dropdb -h "$socket" --if-exists "$TEST_DB" >/dev/null 2>&1 || true
-createdb -h "$socket" "$TEST_DB"
-export MG_REMINDR_DATABASE_URL="postgresql:///${TEST_DB}?host=${socket}"
+export MG_REMINDR_DB="${work}/remindr.sqlite"
 "$MG_REMINDR_BIN" migration apply >/dev/null
 
 due="$(date -I)"
