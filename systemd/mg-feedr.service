@@ -1,0 +1,23 @@
+# Author: Jeff
+# Date: 2026-09-19
+# Description: The live headline ticker daemon — fetches ticker sources, pushes new headlines
+# Notes: Listens on $XDG_RUNTIME_DIR/mg-feedr.sock for the shell's ticker pill, panel and strip.
+#        It only fetches mg-brief sources marked for the ticker, through mg-brief's guarded fetch.
+#        @BINDIR@ is filled in by bin/geist-install; install with
+#        `geist-install --apply`, then `systemctl --user enable --now mg-feedr`
+[Unit]
+Description=mg-feedr live headline ticker
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=@BINDIR@/mg-feedr run
+# a crash or a bad network day: wait, then try again rather than stay down
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=5
+# it never needs more privilege than it starts with
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

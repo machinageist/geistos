@@ -3,16 +3,19 @@
 A local-first Linux workstation: the Geist application suite plus the Hyprland
 and Quickshell configuration that surfaces it on the desktop.
 
-This repository is early. Today it holds the desktop configuration and the
-packaging plan. The installer that pins, builds, and links everything does not
-exist yet.
+This repository is early. Today it holds the desktop configuration, the user
+units, and `bin/geist-install` — which builds the suite from this machine's
+checkouts and installs it for this user. Distribution packaging is deliberately
+gated: see `docs/PACKAGING-GATE.md`.
 
 ## Layout
 
 ```text
 geistos/
+  bin/geist-install   Builds the suite from the checkouts and installs it for this user
   config/hypr/        Hyprland: keybindings, autostart, look and feel, lock, idle
   config/quickshell/  The shell: bar, launcher, panels, services, 38 themes
+  systemd/            User units for the suite's daemons
   mg-suite/           The application suite — a separate repository
 ```
 
@@ -56,6 +59,19 @@ mg-remindr migration apply   # the same for reminders
 Each application takes an explicit path when you want one — `--db`, or
 `MG_CALR_DB`, `MG_REMINDR_DB`, `MG_PLANR_DB` — and otherwise uses its default
 file. A store is created when a command asks for one, never by opening.
+
+## Installing
+
+```sh
+bin/geist-install              # prints what it would do, changes nothing
+bin/geist-install --apply      # builds release binaries into ~/.local/bin, writes the units
+bin/geist-install --check      # says whether what is installed still matches the checkouts
+```
+
+It deliberately leaves three things to you: the desktop configuration
+(`~/dotfiles/scripts/install.sh --apply`), enabling the units, and creating each
+application's store. `--only mg-calr,mg-feedr` limits a run; `GEIST_PREFIX` installs
+somewhere else entirely, taking its units and manifest with it.
 
 ## Requirements
 

@@ -1,0 +1,21 @@
+# Author: Jeff
+# Date: 2026-09-19
+# Description: mg-streamr's position keeper — remembers where each podcast episode was left
+# Notes: Every 10 s it notes a playing episode's spot in mg-streamr's store and marks it heard
+#        near the end; it waits out mpd restarts. @BINDIR@ is filled in by bin/geist-install;
+#        install with `geist-install --apply`, then `systemctl --user enable --now mg-streamr`
+[Unit]
+Description=mg-streamr podcast position keeper
+After=mpd.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=@BINDIR@/mg-streamr daemon
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=5
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
