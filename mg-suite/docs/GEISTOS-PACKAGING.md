@@ -26,9 +26,9 @@ Eight repositories, seven of them Rust applications and one config tree.
 | `mg-briefr` | `mg-brief` | SQLite (bundled via rusqlite) |
 | `mg-vaultr` | `mg-vault`, `mg-vault-indexd` | User Markdown vault; disposable SQLite index |
 | `mg-planr` | `mg-plan` | SQLite (bundled) |
-| `mg-calr` | `mg-calr` | **PostgreSQL server, user-provisioned** |
-| `mg-remindr` | `mg-remindr` | **PostgreSQL server, user-provisioned** |
-| `mg-contactr` | `mg-contacts` | Encrypted local store |
+| `mg-calr` | `mg-calr` | SQLite (bundled) |
+| `mg-remindr` | `mg-remindr` | SQLite (bundled) |
+| `mg-contactr` | `mg-contacts` | SQLite, holding only ciphertext |
 | `mg-calcr` | `mg-calcr` | No external service; bounded local expression/graph engine |
 | `dotfiles` | config tree | Hyprland, Quickshell, ghostty, python3 |
 
@@ -37,9 +37,8 @@ Eight repositories, seven of them Rust applications and one config tree.
 - Rust **1.85 or newer**; four crates are edition 2024.
 - `rusqlite` with `bundled` compiles SQLite from source, so a C toolchain is a
   makedepend. `mg-vaultr` is a workspace with five member crates.
-- `mg-calr` and `mg-remindr` keep their PostgreSQL tests behind
-  `MG_CALR_RUN_DATABASE_TESTS` and `MG_REMINDR_ALLOW_INTEGRATION_TESTS`, so a
-  `check()` that does not stand up a server still runs everything else.
+- No test needs a server or an opt-in variable any more: every storage test
+  takes a store in a throwaway directory, so `check()` runs the whole suite.
 - Every repo is clean under `cargo fmt --check` and
   `cargo clippy --all-targets --all-features -- -D warnings`. Keep that as the
   package's own gate.
@@ -52,16 +51,15 @@ These are the things that will actually bite, in rough order of severity.
 declares `MIT` in its manifest. `mg-vaultr`'s packaging spec still describes the
 MIT-versus-Apache-2.0 question as open; that spec predates the decision.
 
-**The package must not provision PostgreSQL.** `mg-calr init` deliberately
-diagnoses only — it never runs `sudo`, creates a role or database, or applies
-migrations, and the safety specs treat that as a hard boundary. A postinstall
-scriptlet that creates databases would violate the design the applications were
-built to. Ship a documented `geistos-setup` the user runs, not a scriptlet.
+**There is nothing left to provision.** Every application keeps one SQLite file
+under `$XDG_DATA_HOME`, so a clean machine goes from clone to a working suite
+with no server, role or database to create. `mg-calr init` still diagnoses only,
+and opening a store never migrates it.
 
-**Migrations are explicit and user-run.** Both PostgreSQL applications embed
-checksummed, append-only migrations and verify live schema before applying
-anything pending. `mg-remindr migration apply` and `mg-calr database migrate` are
-user actions. An upgrade path needs to tell the user when a new version ships
+**Migrations are explicit and user-run.** The applications embed checksummed,
+append-only migrations and verify the live schema before applying anything
+pending. `mg-remindr migration apply` and `mg-calr database migrate` are user
+actions. An upgrade path needs to tell the user when a new version ships
 migrations, the way Omarchy's migration steps do — it must not run them silently.
 
 **User data lives in XDG directories the package cannot own.** Config at
@@ -105,7 +103,6 @@ upgrade that changes interop identity needs that as a migration step.
 
 - `~/gauntlet-universal/` still exists at home level. The copies vendored inside
   `mg-calr` and `mg-vaultr` were removed; this one was left alone.
-- `mg-remindr`'s PostgreSQL database is still named `mg_todo`, and its migration
-  ledger is still `mg_todo_schema_migrations`. Renaming the database needs
-  `ALTER DATABASE` from another connection; renaming the ledger needs the
-  migration runner to bootstrap on both names. Both were deliberately left.
+- The retired PostgreSQL databases `mg_todo` and `mg_calr` still exist on this
+  machine, with the rows they held before the move. Nothing reads them; they are
+  kept until the SQLite stores have been lived with, then can be dropped.

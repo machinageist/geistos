@@ -6,7 +6,7 @@ Purpose: keep agents focused on the smallest useful, operable version of each re
 
 Current implementation status: `mg-vault`, `mg-plan`, `mg-brief`, and `mg-contacts` have
 their scoped MVP behavior and quality gates implemented. `mg-calr` has the scoped behavior,
-contract coverage, and disposable PostgreSQL persistence verification. The suite has a
+contract coverage, and persistence verification against a disposable store. The suite has a
 read-only status/launcher surface and explicit projection refresh in the Quickshell bar.
 
 ## Suite rule
@@ -92,7 +92,7 @@ Repository: `~/geistos/mg-suite/mg-calr`
 
 ### MVP promise
 
-A user can create calendars and events, inspect a reliable day agenda, and cancel/restore events from a keyboard-friendly local application backed by PostgreSQL.
+A user can create calendars and events, inspect a reliable day agenda, and cancel/restore events from a keyboard-friendly local application backed by one SQLite file.
 
 ### Required MVP behavior
 
@@ -111,7 +111,7 @@ Event recurrence/exceptions, iCalendar fidelity, vdirsyncer/iCloud synchronizati
 
 ### Done means
 
-Against a disposable local PostgreSQL database, a scripted session can migrate, create a calendar, create timed/all-day events, query a timezone-aware agenda, edit with a correct version, reject a stale edit, cancel/restore, export/import, restart, and reproduce the same results. Projection import must reject invalid, stale, or conflicting todo snapshots and replace the file crash-safely.
+Against a store in a throwaway directory, a scripted session can migrate, create a calendar, create timed/all-day events, query a timezone-aware agenda, edit with a correct version, reject a stale edit, cancel/restore, export/import, restart, and reproduce the same results. Projection import must reject invalid, stale, or conflicting todo snapshots and replace the file crash-safely.
 
 ## 4. mg-brief
 
@@ -150,7 +150,7 @@ A user can keep a small local address book whose sensitive fields are encrypted 
 
 ### Required MVP behavior
 
-- Resolve XDG paths and accept only local PostgreSQL/Unix-socket configuration if a database is used.
+- Resolve XDG paths and keep the store in one local file under the XDG data directory.
 - Set up an encrypted user-held key, report status, and verify a passphrase for the current process only.
 - Create, read, list, update, and soft-delete a contact with a stable identifier.
 - Encrypt sensitive fields with authenticated encryption and zeroize plaintext/key intermediates.
