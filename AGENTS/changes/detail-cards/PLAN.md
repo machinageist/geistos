@@ -17,10 +17,16 @@ TMPDIR=/dev/shm cargo clippy --workspace --all-targets --all-features -- -D warn
 TMPDIR=/dev/shm cargo test --workspace --all-targets
 ```
 
-mg-calr database tests additionally:
-`MG_CALR_RUN_DATABASE_TESTS=1 MG_CALR_TEST_DATABASE_URL=$(~/geistos/bin/geist-db url mg_calr_test) TMPDIR=/dev/shm cargo test --test postgres_integration -- --ignored`
+There are no separate database tests any more: both applications keep their data in one
+SQLite file, and every storage test takes a store in a throwaway directory, so the crate
+gate runs everything.
 
-mg-remindr database tests: `MG_REMINDR_ALLOW_INTEGRATION_TESTS=1 TMPDIR=/dev/shm cargo test --all-targets`
+## Status (2026-09-20)
+
+**A1 done** — `mg-calr 4261711`, ported onto the SQLite store. An edit is applied to the
+stored event under the write lock and revalidated; `EventEdit` carries description,
+location, URL, busy and calendar as `Change` values, and `event create`/`event edit` take
+them with `--clear-*` forms. A2–A5 and phases B and C are open.
 
 ## Phase A — mg-calr
 
