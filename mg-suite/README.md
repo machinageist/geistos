@@ -24,9 +24,9 @@ application below is a separate Git repository with its own history and remote.
 | `mg-calcr/` | `mg-calcr` | Safe expression evaluation, formatting, and graph sampling for calculator consumers | Stateless |
 | `mg-vaultr/` | `mg-vault`, `mg-vault-indexd` | Notes, concepts, claims, citations, knowledge relationships and revisions | Markdown files; disposable SQLite index |
 | `mg-planr/` | `mg-plan` | Plans, work items, dependencies, acceptance criteria, evidence references, verification records, completion judgments | SQLite |
-| `mg-calr/` | `mg-calr` | Calendars, events, time blocks, recurrence, availability, conflicts, external sync state | PostgreSQL |
-| `mg-remindr/` | `mg-remindr` | Todos, projects, tags, lifecycle and transition times; the projection `mg-calr` reads for its agenda | PostgreSQL |
-| `mg-contactr/` | `mg-contacts` | Contact identity, encrypted fields, revisions, audit history, soft-delete state | Encrypted local store |
+| `mg-calr/` | `mg-calr` | Calendars, events, time blocks, recurrence, availability, conflicts, external sync state | SQLite |
+| `mg-remindr/` | `mg-remindr` | Todos, projects, tags, lifecycle and transition times; the projection `mg-calr` reads for its agenda | SQLite |
+| `mg-contactr/` | `mg-contacts` | Contact identity, encrypted fields, revisions, audit history, soft-delete state | SQLite; fields encrypted at rest |
 
 Directory and binary names agree for `mg-calr` and `mg-remindr`. Elsewhere the
 directory carries an `r` suffix the binary drops. The binary is what you type.
@@ -48,8 +48,8 @@ directory carries an `r` suffix the binary drops. The binary is what you type.
 ## Build and test
 
 Requires a Rust toolchain at **1.85 or newer** (several crates use edition 2024).
-`mg-calr` and `mg-remindr` additionally need a local PostgreSQL server; the rest are
-self-contained.
+Nothing else: every application stores its data in a SQLite file of its own, so
+there is no server to install, provision or supervise.
 
 Each application builds independently:
 
@@ -60,18 +60,8 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 ```
 
-The PostgreSQL-backed applications keep their database tests opt-in, so a default
-`cargo test` run needs no server:
-
-```sh
-# mg-calr
-MG_CALR_RUN_DATABASE_TESTS=1 \
-MG_CALR_TEST_DATABASE_URL=postgresql:///mg_calr_test \
-TMPDIR=/dev/shm cargo test --test postgres_integration -- --ignored
-
-# mg-remindr
-MG_REMINDR_ALLOW_INTEGRATION_TESTS=1 TMPDIR=/dev/shm cargo test --all-targets
-```
+A plain `cargo test` run needs no setup. The store tests create their own
+temporary database files and clean up after themselves.
 
 `mg-calr init` diagnoses configuration only. It never runs `sudo`, creates roles or
 databases, or applies migrations; `mg-calr database migrate` applies schema
