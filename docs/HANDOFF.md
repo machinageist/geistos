@@ -1,177 +1,107 @@
 <!--
 Author: Jeff
-Date: 2026-09-07
-Description: What the geistos work has reached, and what to pick up next
-Notes: Written at the end of a long session. State claims here were checked
-       against the machine, not recalled
+Date: 2026-09-20
+Description: The session that moved the suite off PostgreSQL, and what is left after it
+Notes: Every state claim here was checked against the machine, not recalled
 -->
 
-# Handoff — 2026-09-07 (updated)
+# Current handoff — 2026-09-20
 
-## Where this stands
+This canonical handoff supersedes the older dated handoffs. Stale history was pruned on 2026-09-22; use the repository and live service as the source of truth.
 
-Nine repositories, all clean and pushed. `geistos` is the umbrella holding the
-desktop configuration; `mg-suite` sits inside it as its own repository holding
-six applications, each also its own repository.
+## What changed
 
-| Repository | Branch | Storage / note |
+**The suite is server-free.** mg-planr, mg-remindr, mg-calr and mg-contactr each
+keep one SQLite file under `$XDG_DATA_HOME`, in WAL with foreign keys on. There is
+no cluster to resolve, provision or supervise, which makes "clone to a working
+suite with no manual database setup" true rather than the finish line.
+
+**Jeff's real data came across, as it stood.** 78 reminders and 2 calendars with
+389 events, each keeping its identity, version and recorded times — an interop
+import could not have done that, because a record at version three is neither new
+nor a version-matched replacement.
+
+| Application | Store | How the data moved |
 |---|---|---|
-| `geistos` | `main` | desktop config, `geist-db`, the suite pipe test |
-| `mg-suite` | `main` | suite docs only; the applications are ignored here |
-| `mg-briefr` | `main` | SQLite — port started on `postgres-port`, does not compile |
-| `mg-calr` | `main` | PostgreSQL |
-| `mg-contactr` | `main` | encrypted local files — port not started |
-| `mg-planr` | `main` | PostgreSQL |
-| `mg-remindr` | `main` | PostgreSQL |
-| `mg-vaultr` | `main` | Markdown files + local index |
-| `dotfiles` | `quickshell-shell` | Quickshell shell and the geist-* bridges |
+| `mg-planr` | `$XDG_DATA_HOME/mg-planr/<name>.sqlite` | `mg-plan adopt-postgres` (no rows existed) |
+| `mg-remindr` | `…/mg-remindr/remindr.sqlite` | `mg-remindr interop adopt-postgres`, 78 todos, revision 141 |
+| `mg-calr` | `…/mg-calr/calr.sqlite` | `event export` from the old build → `event import`, 2 calendars + 389 events |
+| `mg-contactr` | `…/mg-contacts/contacts.sqlite` | nothing stored yet |
 
-All private. `dotfiles` work sits on a branch, not merged to its `main`.
+**`geist-db` is gone**, with `systemd/geist-postgres.service`. The suite pipe test
+took a store in its own temporary directory instead of standing up a cluster, so
+it no longer needs opting into: `tests/suite-pipe.sh`, 9 checks, and still proven
+to fail when pointed at a broken consumer.
 
-The living plan, with every decision and its reasoning, is
-`~/.claude/plans/let-s-do-a-deep-imperative-hopcroft.md`. This document is the
-short version.
+**Mouse resize works again in the flat look.** Hyprland resizes by dragging
+borders and gaps and nothing else, so a look with no border and a gap under four
+pixels left nothing to take hold of. Such a look now sends one pixel of border,
+which reads as a hairline seam between windows that touch.
 
-## What the suite is for
+**The ticker and the brief carry defense, war and OSINT.** Ten sources added:
+`war-twz`, `war-breaking-defense`, `war-defense-one`, `war-defensescoop`,
+`war-naval-news`, `war-aviationist`, `osint-bellingcat`, `osint-war-on-rocks`,
+`osint-oryx`, `news-al-jazeera`. All fetch; 24 sources now.
 
-*"A suite of tools that work on their own like normal productivity tools, but
-together work like a second digital brain."*
+## What this cost, and what it bought
 
-**Done means packageable for others** — a fresh Arch machine going from clone to
-a working suite with no manual database setup. That makes the installer and
-PKGBUILD the finish line, not a nice-to-have.
-
-## Accomplished
-
-**Published.** Nine repositories initialised, licensed MIT, and pushed. Personal
-data removed first: two iCalendar test fixtures were a real schedule (job
-applications, employer research, a cert track, and health information) and are
-now synthetic with every structural property the tests pin preserved.
-
-**PostgreSQL foundation.** `geistos/bin/geist-db` resolves a cluster — an explicit
-`GEIST_PGHOST`, then one the machine already runs, then a private per-user
-cluster it creates itself with `initdb`. The private cluster serves a `0700` unix
-socket with `listen_addresses` empty, so it opens no TCP port. A systemd user
-unit supervises it and never touches a system cluster. `mg-planr` is ported off
-SQLite.
-
-**The desktop.** The calendar card gained day, week and month views: a week as
-seven day columns over twenty-four hour rows, a month as the Monday-first grid a
-wall calendar uses. Events are positioned from real minutes, which the bridge now
-computes. Double-clicking an event opens an editor for its title, day, time and
-length.
-
-**One live cross-application path, now tested end to end.**
-`geistos/tests/suite-pipe.sh` runs the real mg-remindr, the real sync script and
-the real mg-calr against a disposable database. Both halves were previously
-tested only against hand-authored fixtures that agreed with each other by
-construction. The test is proven to fail when pointed at a broken consumer.
-
-**Adoption started.** mg-remindr holds four real commitments (the applications
-floor, the RHCSA baseline gate, D-01, D-02) and they reach the calendar agenda.
-
-**Editing, on both cards.** Double-clicking a calendar event opens an editor for
-its title, day, time and length — `mg-calr event edit` had existed all along with
-an optimistic-lock version the card was already carrying and ignoring. Reminders
-had **no edit anywhere**, not even in the CLI: changing a due date meant destroying
-the reminder and its history. `human::amend` now sits beside `close` and `reopen`,
-and a matching card opens on double-click.
-
-## Bugs found and fixed
-
-Worth knowing because each says something about the system:
-
-- **A stale todo cache killed the whole agenda.** mg-remindr sets a snapshot's
-  `created_at` to the newest record's `observed_at`, deliberately, so an export of
-  unchanged data is byte-identical. mg-calr read the same field as "when this was
-  taken" and refused anything over 24 hours old. A quiet todo list went stale and
-  **re-syncing could not fix it**. Freshness is now measured from when this machine
-  last accepted a projection.
-- **A migration-ledger race in mg-calr**, since fixed. The ledger bootstrap ran on
-  a bare connection before the transaction opened, so its
-  `CREATE TABLE IF NOT EXISTS` sat outside the advisory lock; concurrent identical
-  DDL is not race-safe and the loser got `42P07`. Fixing it made parallel test runs
-  possible, which immediately exposed **a second problem the single-threaded
-  workaround had masked**: two tests assumed a quiet database, and a sibling
-  creating events between two exports made a determinism check fail for real. Both
-  now take their own disposable database.
-- **The suite root was hardcoded in eight places**, which broke the desktop twice
-  in one day. One resolver now, honouring `GEIST_ROOT`.
-- **`CARGO_BIN_EXE_*` is an absolute path baked at compile time.** Any directory
-  move leaves test binaries pointing at paths that no longer exist. `cargo clean -p`
-  after a move.
-- **Naming a QML function `open()` shadows `PopupPanel`'s `bool open`** and stops
-  the whole `Panels/` directory registering its types. The error names whichever
-  type `shell.qml` reaches first, which is misleading.
-
-## What to work on next
-
-Ordered as decided. B is done. C and D are small and unblock clarity; E–G are the substance.
-
-**C — prune the vault specs.** Delete branches D, E, F (the editor stack) and N, O
-(plugins, AI adapters) with their scorecards; recoverable from history. Keep I, J,
-K, L, M, P — "stands alone as a normal productivity tool" is the argument for the
-Obsidian-parity branches — and Q, R, which the finish line depends on.
-
-**D — remove mg-calr's orphaned todo authority.** ~1,600 lines of full CRUD over a
-`todos` table the agenda deliberately ignores. `interop export` depends on it and is
-being deleted too; it has zero consumers. Keep the import direction and the shared
-domain types. Append a migration dropping the tables; never edit an applied one.
-
-**E — mg-briefr.** The largest item. The port is started on the `postgres-port`
-branch and **does not compile**; its commit message enumerates what remains. After
-the port: item content and read state, a full three-pane reader rendering through
-`w3m -dump`, a Quickshell card, saving as a cited note into mg-vault through a
-bridge, and source adapters in the order atom → OSV/GHSA → arXiv → mbox.
-
-**F — mg-contactr.** Ciphertext to PostgreSQL, `keyring.json` stays a local 0600
-file, `envelope.rs` and `keyring.rs` unchanged. Removes a real failure mode: today
-one corrupted line makes the entire store unreadable.
-
-**G — the installer and PKGBUILD.** The finish line.
-
-### Also open, from a survey of capability the GUI never exposed
-
-- **Vault search** exists (`mg-vault search`) and is unreachable from the desktop.
-- **Vault note read** likewise.
-- **Calendar `.ics` import** is CLI-only.
+The PostgreSQL-only tests went with the engine: the legacy ledger upgrade, the
+multi-migration history gaps, the disposable-server harnesses. What they
+protected — ledger integrity, checksum drift, optimistic writes, timestamp
+precision — is covered by the storage unit tests and the new store integration
+suites, which run everywhere with nothing to provision.
 
 ## Things a fresh session should know
 
-- **No vault is registered.** `mg-vault vault list` is empty, which blocks the
-  brief→vault citation path and makes the vault card mostly inert.
-- **Nothing syncs the todo projection on a schedule.** It runs on a reminder
-  mutation or when triggered. That is why it went stale for two days.
-- **mg-remindr's database is still named `mg_todo`**, and its migration ledger
-  `mg_todo_schema_migrations`. Renaming the database needs `ALTER DATABASE` from
-  another connection; renaming the ledger needs the runner to bootstrap on both
-  names. Both deliberately left.
-- **Applications never call each other.** Cross-application work goes through a
-  bridge in `dotfiles/scripts/`. The planned brief→vault save follows this.
-- **Do not change keybindings or existing bar click actions** without approval —
+- **The retired databases still exist**: `mg_todo` and `mg_calr` on the system
+  cluster, plus the private cluster at `$XDG_DATA_HOME/geist/pg` and its disabled
+  `geist-postgres.service` in `~/.config/systemd/user/`. Nothing reads them.
+  Dumps taken before the move are in `~/geist-migration-backups/`. Dropping any
+  of it is a decision to make after living with the new stores.
+- **`~/wt/mg-calr-details` is a worktree on `detail-cards/calr`**, still at the
+  PostgreSQL commit. It needs rebasing onto the port before that work continues.
+- **Adoption is a one-shot path.** `mg-remindr interop adopt-postgres` fills an
+  empty store only, and refuses an export carrying tag links, parents,
+  dependencies, recurrence or deliveries rather than dropping them. Delete
+  `mg-remindr/src/adopt.rs` once the databases are gone.
+- **No vault is registered** (`mg-vault vault list` is empty), so the vault card
+  stays inert and mg-bookr's note export says so.
+- **mg-contacts has never been initialized**; its store is created on first use.
+- Do not change keybindings or existing bar click actions without approval —
   `dotfiles/docs/PROTECTED_KEYBINDINGS.md`.
-- The career plan this competes with is real and was accepted knowingly, with a
-  **2026-11-01 review trigger**: if RHCSA is not scheduled by then, revisit rather
-  than let it ride.
 
 ## Verification
 
 ```sh
-# every repo clean and synced
-for d in geistos geistos/mg-suite geistos/mg-suite/mg-*; do
+# every repo clean
+for d in geistos dotfiles geistos/mg-suite geistos/mg-suite/mg-*; do
   git -C ~/$d status --porcelain | wc -l; done
 
 # the one live cross-application path, and proof the test can fail
-GEIST_RUN_SUITE_TESTS=1 ~/geistos/tests/suite-pipe.sh
-GEIST_RUN_SUITE_TESTS=1 MG_CALR_BIN=/bin/true ~/geistos/tests/suite-pipe.sh   # must fail
+~/geistos/tests/suite-pipe.sh
+MG_CALR_BIN=/bin/true ~/geistos/tests/suite-pipe.sh   # must fail
 
 # per crate
 cargo fmt --all -- --check
-TMPDIR=/dev/shm cargo clippy --workspace --all-targets --all-features -- -D warnings
-TMPDIR=/dev/shm cargo test --workspace --all-targets
+TMPDIR=/dev/shm cargo clippy --all-targets --all-features -- -D warnings
+TMPDIR=/dev/shm cargo test
 
 # desktop
-cd ~/dotfiles/scripts && python3 -m unittest discover -s tests -p 'test_*.py'
-python3 ~/dotfiles/scripts/geist-status.py
+cd ~/dotfiles && node --test config/quickshell/mgeist/Services/tests/*.test.js \
+  config/quickshell/mgeist/Services/tests/*.test.cjs
+python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+python3 scripts/geist-status.py
 qs -c mgeist ipc call calendar status
 ```
+
+## What to work on next
+
+1. **The teaching-comment pass** across the codebase, comment-only diffs.
+2. **The installer and PKGBUILD** — the finish line, and nothing now stands in
+   its way: no server to provision, no cluster to supervise.
+3. **mg-briefr's reader** (three panes through `w3m -dump`, a shell card, saving
+   cited notes into mg-vault) and the source adapters after atom: OSV/GHSA,
+   arXiv, mbox.
+4. **Register a vault**, which unblocks the brief→vault citation path and the
+   mg-bookr note export.
+5. Rebase `detail-cards/calr` onto the SQLite port.
