@@ -18,6 +18,7 @@ Singleton {
         { name: "Clipboard history", subtitle: "Search and restore clipboard entries", glyph: "\uf0ea", tags: "copy paste cliphist", ipc: ["clipboard", "toggle"] },
         { name: "AI assistant", subtitle: "Local model and AI CLI launchers", glyph: "\uf0d0", tags: "ollama claude hermes", ipc: ["ai", "toggle"] },
         { name: "Theme and wallpaper", subtitle: "Appearance, palettes and rotation", glyph: "\uf53f", tags: "dark light background", ipc: ["selector", "toggle"] },
+        { name: "Auto-hide bar", subtitle: "Toggle the bar's edge reveal behavior", glyph: "\uf2d0", tags: "bar panel dock reveal hide", ipc: ["desktop", "toggleBarAutoHide"] },
         { name: "Geist applications", subtitle: "Calendar, todo, brief, vault and contacts", glyph: "\uf1b2", tags: "productivity local apps", ipc: ["geist", "page", "calendar"] },
         { name: "Refresh calendar todo projection", subtitle: "Export mg-remindr and validate the mg-calr agenda projection", glyph: "\uf021", tags: "interop agenda sync projection", ipc: ["geist", "syncProjection"] },
         { name: "Weather", subtitle: "Forecast and location settings", glyph: "\uf0c2", tags: "temperature forecast rain", ipc: ["weather", "refresh"] },

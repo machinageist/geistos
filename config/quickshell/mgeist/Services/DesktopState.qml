@@ -10,6 +10,7 @@ Singleton {
     id: root
     property bool focusMode: false
     property string appearancePolicy: "wallpaper" // manual | wallpaper | schedule
+    property bool barAutoHide: false
     property int dayHour: 7
     property int nightHour: 19
     property bool quietHours: true
@@ -23,6 +24,8 @@ Singleton {
     function setFocus(on) { root.focusMode = !!on; save(); }
     function toggleFocus() { setFocus(!root.focusMode); }
     function setPolicy(policy) { root.appearancePolicy = policy; evaluate(); save(); }
+    function setBarAutoHide(on) { root.barAutoHide = !!on; save(); }
+    function toggleBarAutoHide() { setBarAutoHide(!root.barAutoHide); }
     function evaluate() {
         if (!root.loaded) return;
         const h = new Date().getHours();
@@ -36,7 +39,7 @@ Singleton {
         root.appearanceRequested(root.requestedMode);
     }
     function save() {
-        state.setText(JSON.stringify({ focusMode, appearancePolicy, dayHour, nightHour, quietHours, quietStart, quietEnd }, null, 2));
+        state.setText(JSON.stringify({ focusMode, appearancePolicy, barAutoHide, dayHour, nightHour, quietHours, quietStart, quietEnd }, null, 2));
     }
 
     FileView {
@@ -48,6 +51,7 @@ Singleton {
                 const s = JSON.parse(text());
                 root.focusMode = s.focusMode ?? false;
                 root.appearancePolicy = s.appearancePolicy ?? "wallpaper";
+                root.barAutoHide = s.barAutoHide === true;
                 root.dayHour = s.dayHour ?? 7;
                 root.nightHour = s.nightHour ?? 19;
                 root.quietHours = s.quietHours ?? true;

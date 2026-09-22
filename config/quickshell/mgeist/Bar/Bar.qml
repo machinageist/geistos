@@ -7,6 +7,7 @@
 import QtQuick
 import Quickshell
 import "root:/Theme"
+import "root:/Services"
 import "modules"
 
 PanelWindow {
@@ -14,6 +15,12 @@ PanelWindow {
 
     required property ShellScreen modelData
     screen: modelData
+
+    readonly property bool autoHide: DesktopState.barAutoHide
+    property bool revealed: !autoHide
+    readonly property int revealHeight: 4
+    readonly property real shownBarY: Theme.barMargin
+    readonly property real hiddenBarY: -(Theme.barHeight - revealHeight)
 
     // Bar modules do not know about panels; shell.qml connects these
     signal notificationsRequested()
@@ -32,22 +39,78 @@ PanelWindow {
     }
 
     margins {
-        top: Theme.barMargin
+        top: 0
         left: Theme.barMargin
         right: Theme.barMargin
     }
 
-    implicitHeight: Theme.barHeight
-    exclusiveZone: Theme.barHeight + Theme.barMargin
+    implicitHeight: Theme.barHeight + Theme.barMargin
+    exclusiveZone: autoHide && !revealed ? 0 : Theme.barHeight + Theme.barMargin
     color: "transparent"
+    mask: Region { item: root.autoHide && !root.revealed ? revealRegion : barContent }
 
-    Rectangle {
-        id: surface
-        anchors.fill: parent
-        radius: Theme.radius
-        color: Theme.barBg
-        border.width: 1
-        border.color: Theme.edge(Theme.purple)
+    function updateAutoHide() {
+        if (!root.autoHide) {
+            hideTimer.stop();
+            root.revealed = true;
+        } else if (barHover.hovered || revealHover.hovered) {
+            hideTimer.stop();
+            root.revealed = true;
+        } else {
+            hideTimer.restart();
+        }
+    }
+    onAutoHideChanged: updateAutoHide()
+
+    Timer {
+        id: hideTimer
+        interval: 420
+        onTriggered: {
+            if (!root.autoHide) return;
+            if (barHover.hovered || revealHover.hovered) {
+                restart();
+                return;
+            }
+            root.revealed = false;
+        }
+    }
+
+    Item {
+        id: revealRegion
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        height: root.revealHeight
+    }
+
+    HoverHandler {
+        id: revealHover
+        target: revealRegion
+        onHoveredChanged: root.updateAutoHide()
+    }
+    HoverHandler {
+        id: barHover
+        target: barContent
+        onHoveredChanged: root.updateAutoHide()
+    }
+
+    Item {
+        id: barContent
+        width: parent.width
+        height: Theme.barHeight
+        y: root.autoHide && !root.revealed ? root.hiddenBarY : root.shownBarY
+
+        Behavior on y {
+            NumberAnimation { duration: Theme.animNormal; easing.type: Easing.InOutQuad }
+        }
+
+        Rectangle {
+            id: surface
+            anchors.fill: parent
+            radius: Theme.radius
+            color: Theme.barBg
+            border.width: 1
+            border.color: Theme.edge(Theme.purple)
 
         // ── Left ─────────────────────────────────────────────
         Row {
@@ -130,6 +193,7 @@ PanelWindow {
                 onClicked: root.notificationsRequested()
             }
 
+        }
         }
     }
 }

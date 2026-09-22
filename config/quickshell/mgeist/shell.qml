@@ -383,7 +383,9 @@ ShellRoot {
         target: "desktop"
         function focus(): void { DesktopState.toggleFocus(); }
         function policy(name: string): void { DesktopState.setPolicy(name); }
-        function status(): string { return `focus=${DesktopState.focusMode} policy=${DesktopState.appearancePolicy} requested=${DesktopState.requestedMode} quiet=${DesktopState.quietActive}`; }
+        function barAutoHide(enabled: bool): void { DesktopState.setBarAutoHide(enabled); }
+        function toggleBarAutoHide(): void { DesktopState.toggleBarAutoHide(); }
+        function status(): string { return `focus=${DesktopState.focusMode} policy=${DesktopState.appearancePolicy} barAutoHide=${DesktopState.barAutoHide} quiet=${DesktopState.quietActive}`; }
     }
 
     IpcHandler {

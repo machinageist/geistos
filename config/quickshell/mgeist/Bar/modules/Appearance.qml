@@ -14,6 +14,7 @@ Pill {
     hoverTitle: "Appearance"
     hoverCardWidth: 390
     hoverDetail: `Theme: ${Theme.isDark ? "Dark" : "Light"}\n`
+        + `Auto-hide bar: ${DesktopState.barAutoHide ? "on" : "off"}\n`
         + `Brightness: ${Backlight.percent}%  •  ${inhibitor.enabled ? "Sleep blocked" : "Sleep allowed"}\n`
         + `Blue light: ${BlueLight.active ? `${BlueLight.temperature}K${BlueLight.autoShift ? " (auto)" : ""}` : "Off"}`
     hoverContent: appearanceControls
@@ -101,6 +102,24 @@ Pill {
                     Text { width: parent.width - 32; anchors.verticalCenter: parent.verticalCenter; text: Theme.isDark ? "Dark theme — switch to light" : "Light theme — switch to dark"; color: Theme.fg; font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize; elide: Text.ElideRight }
                 }
                 MouseArea { id: themeHit; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.toggleTheme() }
+            }
+
+            Rectangle {
+                width: parent.width
+                height: 32
+                radius: Theme.radius
+                color: autoHideHit.containsMouse || DesktopState.barAutoHide ? Qt.alpha(Theme.accent, 0.14) : "transparent"
+                border.width: 1
+                border.color: Theme.edge(DesktopState.barAutoHide ? Theme.accent : Theme.muted)
+                Row {
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 12
+                    spacing: 10
+                    Text { width: 22; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignHCenter; text: "\uf2d0"; color: DesktopState.barAutoHide ? Theme.accent : Theme.muted; font.family: Theme.iconFontFamily; font.pixelSize: Theme.iconSize }
+                    Text { width: parent.width - 32; anchors.verticalCenter: parent.verticalCenter; text: DesktopState.barAutoHide ? "Auto-hide bar — on" : "Auto-hide bar — off"; color: Theme.fg; font.family: Theme.fontFamily; font.pixelSize: Theme.fontSize; elide: Text.ElideRight }
+                }
+                MouseArea { id: autoHideHit; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { DesktopState.toggleBarAutoHide(); Osd.show("\uf2d0", DesktopState.barAutoHide ? "Bar auto-hide on" : "Bar auto-hide off", "Appearance", -1, "accent"); } }
             }
 
             Rectangle {
