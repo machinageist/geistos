@@ -5,6 +5,7 @@ pub mod domain;
 pub mod ics;
 pub mod interop;
 pub mod notify;
+mod secure_db;
 pub mod storage;
 pub mod tui;
 

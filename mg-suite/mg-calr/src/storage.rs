@@ -31,6 +31,7 @@ use crate::domain::{
     RfcUid,
     todo::{Project, ProjectId, Tag, TagId},
 };
+use crate::secure_db;
 
 // ── Where the store lives ──
 
@@ -41,10 +42,21 @@ pub const DEFAULT_DB_FILE: &str = "calr.sqlite";
 /// How long a writer waits for another process to finish before giving up.
 const BUSY_TIMEOUT_SECONDS: u64 = 5;
 
+// Accept an override only when it stays a database leaf in the app-owned data directory
+fn approved_database_override(candidate: PathBuf, data_dir: &Path) -> Option<PathBuf> {
+    (candidate.is_absolute()
+        && candidate.file_name().is_some_and(|name| !name.is_empty())
+        && candidate.parent() == Some(data_dir))
+    .then_some(candidate)
+}
+
 // Resolve the store path the way every command resolves it
 #[must_use]
 pub fn default_path(data_dir: &Path) -> PathBuf {
-    std::env::var_os(DB_PATH_ENV).map_or_else(|| data_dir.join(DEFAULT_DB_FILE), PathBuf::from)
+    std::env::var_os(DB_PATH_ENV)
+        .map(PathBuf::from)
+        .and_then(|candidate| approved_database_override(candidate, data_dir))
+        .unwrap_or_else(|| data_dir.join(DEFAULT_DB_FILE))
 }
 
 // ── Schema ──
@@ -372,13 +384,6 @@ impl Store {
                 "the database path is empty".to_owned(),
             ));
         }
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| StorageError::Open(format!("{}: {error}", parent.display())))?;
-        }
         let store = Self { path };
         let connection = store.conn()?;
         // WAL lets the shell read while a command writes, and the mode lives in the file
@@ -390,6 +395,8 @@ impl Store {
                 "the store could not switch to WAL (journal mode {mode})"
             )));
         }
+        secure_db::ensure_database_sidecars(&store.path)
+            .map_err(|error| StorageError::Open(format!("{}: {error}", store.path.display())))?;
         Ok(store)
     }
 
@@ -400,7 +407,9 @@ impl Store {
 
     // Open one connection with the settings every connection needs
     fn conn(&self) -> Result<Connection, StorageError> {
-        let connection = Connection::open(&self.path)
+        secure_db::prepare_database_path(&self.path)
+            .map_err(|error| StorageError::Open(format!("{}: {error}", self.path.display())))?;
+        let connection = secure_db::open_database(&self.path)
             .map_err(|error| StorageError::Open(format!("{}: {error}", self.path.display())))?;
         connection
             .busy_timeout(Duration::from_secs(BUSY_TIMEOUT_SECONDS))
@@ -1584,12 +1593,77 @@ mod tests {
     }
 
     #[test]
-    fn the_file_lands_where_the_environment_says() {
+    fn the_file_lands_in_the_application_data_directory() {
         assert_eq!(
             default_path(Path::new("/xdg/data/mg-calr")),
             PathBuf::from("/xdg/data/mg-calr/calr.sqlite")
         );
+        assert_eq!(
+            approved_database_override(
+                PathBuf::from("/xdg/data/mg-calr/testing.sqlite"),
+                Path::new("/xdg/data/mg-calr")
+            ),
+            Some(PathBuf::from("/xdg/data/mg-calr/testing.sqlite"))
+        );
+        assert_eq!(
+            approved_database_override(
+                PathBuf::from("/tmp/elsewhere.sqlite"),
+                Path::new("/xdg/data/mg-calr")
+            ),
+            None
+        );
         assert!(Store::open("").is_err(), "an empty path is not a store");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_storage_is_private_repairs_modes_and_rejects_symlinks() {
+        use std::{
+            fs,
+            os::unix::fs::{PermissionsExt, symlink},
+        };
+
+        fn mode(path: &Path) -> u32 {
+            fs::metadata(path).unwrap().permissions().mode() & 0o777
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("new/calr.sqlite");
+        let store = Store::open(&path).unwrap();
+        store.migrate().unwrap();
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        assert_eq!(mode(&path), 0o600);
+
+        let connection = store.conn().unwrap();
+        connection
+            .execute_batch("CREATE TABLE f03_probe (value INTEGER)")
+            .unwrap();
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = path.clone().into_os_string();
+            sidecar.push(suffix);
+            let sidecar = PathBuf::from(sidecar);
+            assert!(sidecar.is_file(), "SQLite creates {suffix}");
+            assert_eq!(mode(&sidecar), 0o600, "{suffix} is owner-only");
+        }
+
+        let repaired_directory = root.path().join("repaired");
+        fs::create_dir(&repaired_directory).unwrap();
+        fs::set_permissions(&repaired_directory, fs::Permissions::from_mode(0o755)).unwrap();
+        let repaired_path = repaired_directory.join("calr.sqlite");
+        fs::File::create(&repaired_path).unwrap();
+        fs::set_permissions(&repaired_path, fs::Permissions::from_mode(0o644)).unwrap();
+        Store::open(&repaired_path).unwrap();
+        assert_eq!(mode(&repaired_directory), 0o700);
+        assert_eq!(mode(&repaired_path), 0o600);
+
+        let target = root.path().join("target.sqlite");
+        let link = root.path().join("link.sqlite");
+        symlink(&target, &link).unwrap();
+        assert!(Store::open(&link).is_err());
+        assert!(
+            !target.exists(),
+            "SQLite never follows the protected database leaf"
+        );
     }
 
     #[test]

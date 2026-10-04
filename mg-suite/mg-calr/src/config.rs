@@ -18,6 +18,8 @@ pub enum ConfigError {
     },
     #[error("invalid TOML configuration: {0}")]
     InvalidToml(#[from] toml::de::Error),
+    #[error("database path must be an absolute file in the application data directory")]
+    UnsafeDatabasePath,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -126,21 +128,21 @@ pub fn resolve_config<S: std::hash::BuildHasher>(
 ) -> Result<AppConfig, ConfigError> {
     let paths = ConfigPaths::from_env(vars)?;
     let file = file_contents.map_or_else(|| Ok(FileConfig::default()), toml::from_str)?;
-    // the argument wins, then the environment, then the file, then the XDG data directory
-    let database = if let Some(path) = cli_store_path {
-        StoreSettings {
-            path,
-            source: ConfigSource::Cli,
-        }
+    // The argument wins, then the environment, then the file. Every override remains a leaf
+    // in the private application data directory, so descriptor checks and SQLite's path open share
+    // one application-owned parent.
+    let configured = if let Some(path) = cli_store_path {
+        Some((path, ConfigSource::Cli))
     } else if let Some(path) = vars.get(crate::storage::DB_PATH_ENV) {
+        Some((PathBuf::from(path), ConfigSource::Environment))
+    } else {
+        file.database.path.map(|path| (path, ConfigSource::File))
+    };
+    let database = if let Some((path, source)) = configured {
         StoreSettings {
-            path: PathBuf::from(path),
-            source: ConfigSource::Environment,
-        }
-    } else if let Some(path) = file.database.path {
-        StoreSettings {
-            path,
-            source: ConfigSource::File,
+            path: approved_database_path(path, &paths.data_dir)
+                .ok_or(ConfigError::UnsafeDatabasePath)?,
+            source,
         }
     } else {
         StoreSettings {
@@ -149,6 +151,14 @@ pub fn resolve_config<S: std::hash::BuildHasher>(
         }
     };
     Ok(AppConfig { paths, database })
+}
+
+/// Accept configuration only for database leaves directly in the application-owned data directory.
+fn approved_database_path(candidate: PathBuf, data_dir: &Path) -> Option<PathBuf> {
+    (candidate.is_absolute()
+        && candidate.file_name().is_some_and(|name| !name.is_empty())
+        && candidate.parent() == Some(data_dir))
+    .then_some(candidate)
 }
 
 /// Load configuration from the current process environment and optional file.

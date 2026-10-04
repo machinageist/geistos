@@ -267,13 +267,8 @@ fn agenda_cli_reports_stale_projection_without_leaking_its_path() {
     stale.store(&path).unwrap();
 
     cargo_bin_cmd!("mg-calr")
-        .args([
-            "--json",
-            "--db",
-            "/nonexistent/mg-calr-test/calr.sqlite",
-            "agenda",
-            "--todo-projection",
-        ])
+        .env("XDG_DATA_HOME", "/nonexistent/mg-calr-test")
+        .args(["--json", "agenda", "--todo-projection"])
         .arg(&path)
         .args([
             "--start",
@@ -303,13 +298,8 @@ fn agenda_cli_reports_projection_conflict_without_leaking_its_path() {
     conflicting.store(&path).unwrap();
 
     cargo_bin_cmd!("mg-calr")
-        .args([
-            "--json",
-            "--db",
-            "/nonexistent/mg-calr-test/calr.sqlite",
-            "agenda",
-            "--todo-projection",
-        ])
+        .env("XDG_DATA_HOME", "/nonexistent/mg-calr-test")
+        .args(["--json", "agenda", "--todo-projection"])
         .arg(&path)
         .args([
             "--start",

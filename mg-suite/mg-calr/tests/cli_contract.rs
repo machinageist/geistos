@@ -1,13 +1,19 @@
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 
-/// A store path under a directory that cannot exist, so a command that reaches storage
-/// fails there — and one that validates its input first never gets that far.
-const UNWRITABLE_STORE: &str = "/nonexistent/mg-calr-test/calr.sqlite";
+/// An XDG data parent that cannot exist, so commands which reach storage fail there.
+/// Commands that validate their input first still exercise the real pre-storage error path.
+const UNWRITABLE_DATA_DIR: &str = "/nonexistent/mg-calr-test";
+
+fn test_command() -> assert_cmd::Command {
+    let mut command = cargo_bin_cmd!("mg-calr");
+    command.env("XDG_DATA_HOME", UNWRITABLE_DATA_DIR);
+    command
+}
 
 #[test]
 fn event_import_help_exposes_file_argument() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args(["event", "import", "--help"])
         .assert()
         .success()
@@ -19,15 +25,8 @@ fn event_import_validates_before_database_access_and_hides_file_path() {
     let temp = tempfile::tempdir().unwrap();
     let file = temp.path().join("invalid-events.json");
     std::fs::write(&file, r#"{"schema_version":2,"calendars":[],"events":[]}"#).unwrap();
-    cargo_bin_cmd!("mg-calr")
-        .args([
-            "--json",
-            "--db",
-            UNWRITABLE_STORE,
-            "event",
-            "import",
-            "--file",
-        ])
+    test_command()
+        .args(["--json", "event", "import", "--file"])
         .arg(&file)
         .assert()
         .failure()
@@ -38,7 +37,7 @@ fn event_import_validates_before_database_access_and_hides_file_path() {
 
 #[test]
 fn event_export_help_is_available_without_database_access() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args(["event", "export", "--help"])
         .assert()
         .success()
@@ -47,7 +46,7 @@ fn event_export_help_is_available_without_database_access() {
 
 #[test]
 fn event_edit_help_exposes_optimistic_and_temporal_arguments() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args(["event", "edit", "--help"])
         .assert()
         .success()
@@ -59,11 +58,9 @@ fn event_edit_help_exposes_optimistic_and_temporal_arguments() {
 
 #[test]
 fn event_edit_rejects_partial_temporal_form_without_database_access() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args([
             "--json",
-            "--db",
-            UNWRITABLE_STORE,
             "event",
             "edit",
             "--event-id",
@@ -83,7 +80,7 @@ fn event_edit_rejects_partial_temporal_form_without_database_access() {
 
 #[test]
 fn event_edit_rejects_empty_update_without_database_access() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args([
             "--json",
             "--no-input",
@@ -102,7 +99,7 @@ fn event_edit_rejects_empty_update_without_database_access() {
 
 #[test]
 fn event_restore_help_exposes_optimistic_arguments() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args(["event", "restore", "--help"])
         .assert()
         .success()
@@ -112,7 +109,7 @@ fn event_restore_help_exposes_optimistic_arguments() {
 
 #[test]
 fn agenda_help_exposes_explicit_window_timezone_and_lifecycle_flags() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args(["agenda", "--help"])
         .assert()
         .success()
@@ -129,14 +126,8 @@ fn agenda_help_exposes_explicit_window_timezone_and_lifecycle_flags() {
 fn agenda_reports_missing_projection_before_calendar_database_failure() {
     let temp = tempfile::tempdir().unwrap();
     let missing = temp.path().join("missing-projection.json");
-    cargo_bin_cmd!("mg-calr")
-        .args([
-            "--json",
-            "--db",
-            UNWRITABLE_STORE,
-            "agenda",
-            "--todo-projection",
-        ])
+    test_command()
+        .args(["--json", "agenda", "--todo-projection"])
         .arg(&missing)
         .args([
             "--start",
@@ -152,8 +143,8 @@ fn agenda_reports_missing_projection_before_calendar_database_failure() {
         .stderr(predicate::str::contains("\"code\":\"projection_missing\""))
         .stderr(predicate::str::contains(missing.to_string_lossy().as_ref()).not());
 
-    cargo_bin_cmd!("mg-calr")
-        .args(["--db", UNWRITABLE_STORE, "agenda", "--todo-projection"])
+    test_command()
+        .args(["agenda", "--todo-projection"])
         .arg(&missing)
         .args([
             "--start",
@@ -174,11 +165,9 @@ fn agenda_reports_missing_projection_before_calendar_database_failure() {
 
 #[test]
 fn agenda_rejects_invalid_window_and_timezone_without_database_access() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args([
             "--json",
-            "--db",
-            UNWRITABLE_STORE,
             "agenda",
             "--start",
             "2026-08-25",
@@ -196,11 +185,9 @@ fn agenda_rejects_invalid_window_and_timezone_without_database_access() {
 
 #[test]
 fn agenda_rejects_equal_window_without_database_access() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args([
             "--json",
-            "--db",
-            UNWRITABLE_STORE,
             "agenda",
             "--start",
             "2026-08-24",
@@ -219,7 +206,7 @@ fn agenda_rejects_equal_window_without_database_access() {
 
 #[test]
 fn version_json_has_a_stable_envelope() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args(["--json", "version"])
         .assert()
         .success()
@@ -230,7 +217,7 @@ fn version_json_has_a_stable_envelope() {
 
 #[test]
 fn config_paths_json_respects_xdg_without_touching_database() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .env("HOME", "/home/tester")
         .env("XDG_CONFIG_HOME", "/tmp/mg-calr-config")
         .args(["--json", "config", "paths"])
@@ -243,7 +230,7 @@ fn config_paths_json_respects_xdg_without_touching_database() {
 
 #[test]
 fn no_color_environment_is_accepted_for_human_output() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .env("NO_COLOR", "1")
         .arg("version")
         .assert()
@@ -258,7 +245,7 @@ fn invalid_configuration_is_a_stable_json_error() {
     std::fs::create_dir_all(config_home.join("mg-calr")).unwrap();
     std::fs::write(config_home.join("mg-calr/config.toml"), "not = [valid").unwrap();
 
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .env("XDG_CONFIG_HOME", &config_home)
         .env("HOME", temp.path())
         .args(["--json", "config", "paths"])
@@ -270,8 +257,8 @@ fn invalid_configuration_is_a_stable_json_error() {
 
 #[test]
 fn init_reports_unavailable_database_without_failing_or_mutating() {
-    cargo_bin_cmd!("mg-calr")
-        .args(["--json", "--db", UNWRITABLE_STORE, "init"])
+    test_command()
+        .args(["--json", "init"])
         .assert()
         .success()
         .stdout(predicate::str::contains("\"command\":\"init\""))
@@ -281,15 +268,8 @@ fn init_reports_unavailable_database_without_failing_or_mutating() {
 
 #[test]
 fn no_input_calendar_create_reports_missing_name_without_database_access() {
-    cargo_bin_cmd!("mg-calr")
-        .args([
-            "--json",
-            "--no-input",
-            "--db",
-            UNWRITABLE_STORE,
-            "calendar",
-            "create",
-        ])
+    test_command()
+        .args(["--json", "--no-input", "calendar", "create"])
         .assert()
         .failure()
         .code(64)
@@ -301,15 +281,8 @@ fn no_input_calendar_create_reports_missing_name_without_database_access() {
 
 #[test]
 fn no_input_event_create_reports_missing_fields_without_database_access() {
-    cargo_bin_cmd!("mg-calr")
-        .args([
-            "--json",
-            "--no-input",
-            "--db",
-            UNWRITABLE_STORE,
-            "event",
-            "create",
-        ])
+    test_command()
+        .args(["--json", "--no-input", "event", "create"])
         .assert()
         .failure()
         .code(64)
@@ -321,7 +294,7 @@ fn no_input_event_create_reports_missing_fields_without_database_access() {
 
 #[test]
 fn event_create_requires_one_explicit_temporal_form() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args([
             "--no-input",
             "event",
@@ -343,7 +316,7 @@ fn event_create_requires_one_explicit_temporal_form() {
 
 #[test]
 fn event_create_rejects_mixed_timed_and_all_day_flags() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args([
             "--no-input",
             "event",
@@ -370,7 +343,7 @@ fn event_create_rejects_mixed_timed_and_all_day_flags() {
 
 #[test]
 fn event_create_rejects_unknown_iana_timezone_without_database_access() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args([
             "--no-input",
             "event",
@@ -394,15 +367,8 @@ fn event_create_rejects_unknown_iana_timezone_without_database_access() {
 
 #[test]
 fn no_input_project_create_reports_missing_name_without_database_access() {
-    cargo_bin_cmd!("mg-calr")
-        .args([
-            "--json",
-            "--no-input",
-            "--db",
-            UNWRITABLE_STORE,
-            "project",
-            "create",
-        ])
+    test_command()
+        .args(["--json", "--no-input", "project", "create"])
         .assert()
         .failure()
         .code(64)
@@ -414,7 +380,7 @@ fn no_input_project_create_reports_missing_name_without_database_access() {
 
 #[test]
 fn event_create_exposes_the_repeat_rule_and_names_what_it_refuses() {
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args(["event", "create", "--help"])
         .assert()
         .success()
@@ -438,7 +404,7 @@ fn event_create_exposes_the_repeat_rule_and_names_what_it_refuses() {
         calendar,
     ];
 
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args(["event", "create"])
         .args(timed)
         .args(["--repeat", "yearly", "--count", "3"])
@@ -448,7 +414,7 @@ fn event_create_exposes_the_repeat_rule_and_names_what_it_refuses() {
             "is not a repeat frequency; use daily, weekly, or monthly",
         ));
 
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args(["event", "create"])
         .args(timed)
         .args([
@@ -463,7 +429,7 @@ fn event_create_exposes_the_repeat_rule_and_names_what_it_refuses() {
         .failure()
         .stderr(predicate::str::contains("is not a weekday; use mon"));
 
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args(["event", "create"])
         .args(timed)
         .args(["--interval", "2"])
@@ -471,7 +437,7 @@ fn event_create_exposes_the_repeat_rule_and_names_what_it_refuses() {
         .failure()
         .stderr(predicate::str::contains("--repeat"));
 
-    cargo_bin_cmd!("mg-calr")
+    test_command()
         .args(["event", "create"])
         .args(timed)
         .args([

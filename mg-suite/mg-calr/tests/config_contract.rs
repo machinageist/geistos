@@ -60,29 +60,31 @@ fn store_path_precedence_is_cli_then_environment_then_file_then_the_data_directo
     let vars = env(&[
         ("HOME", "/home/tester"),
         ("USER", "tester"),
-        ("MG_CALR_DB", "/home/tester/env.sqlite"),
+        ("MG_CALR_DB", "/home/tester/.local/share/mg-calr/env.sqlite"),
     ]);
     let file = r#"[database]
-path = "/home/tester/file.sqlite"
+path = "/home/tester/.local/share/mg-calr/file.sqlite"
 "#;
 
     let from_cli = resolve_config(
         &vars,
         Some(file),
-        Some(PathBuf::from("/home/tester/cli.sqlite")),
+        Some(PathBuf::from(
+            "/home/tester/.local/share/mg-calr/cli.sqlite",
+        )),
     )
     .expect("CLI config");
     assert_eq!(from_cli.database.source(), ConfigSource::Cli);
     assert_eq!(
         from_cli.database.path(),
-        PathBuf::from("/home/tester/cli.sqlite")
+        PathBuf::from("/home/tester/.local/share/mg-calr/cli.sqlite")
     );
 
     let from_env = resolve_config(&vars, Some(file), None).expect("environment config");
     assert_eq!(from_env.database.source(), ConfigSource::Environment);
     assert_eq!(
         from_env.database.path(),
-        PathBuf::from("/home/tester/env.sqlite")
+        PathBuf::from("/home/tester/.local/share/mg-calr/env.sqlite")
     );
 
     let mut no_env = vars;
@@ -91,7 +93,7 @@ path = "/home/tester/file.sqlite"
     assert_eq!(from_file.database.source(), ConfigSource::File);
     assert_eq!(
         from_file.database.path(),
-        PathBuf::from("/home/tester/file.sqlite")
+        PathBuf::from("/home/tester/.local/share/mg-calr/file.sqlite")
     );
 
     // nothing configured: one file under the XDG data directory, which needs no provisioning
@@ -101,4 +103,19 @@ path = "/home/tester/file.sqlite"
         from_default.database.path(),
         PathBuf::from("/home/tester/.local/share/mg-calr/calr.sqlite")
     );
+}
+
+#[test]
+fn unsafe_database_overrides_are_refused_before_storage_opens() {
+    let vars = env(&[("HOME", "/home/tester")]);
+    let error = resolve_config(
+        &vars,
+        None,
+        Some(PathBuf::from("/home/tester/shared.sqlite")),
+    )
+    .expect_err("shared parent must not be accepted");
+    assert!(matches!(
+        error,
+        mg_calr::config::ConfigError::UnsafeDatabasePath
+    ));
 }
