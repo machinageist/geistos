@@ -66,9 +66,13 @@ trap cleanup EXIT
 
 printf 'suite pipe test\n'
 
+# Keep application-owned database paths inside isolated XDG directories.
+export XDG_CONFIG_HOME="${work}/config"
+export XDG_DATA_HOME="${work}/data"
+
 # Section: a real producer store, in this test's own directory
 
-export MG_REMINDR_DB="${work}/remindr.sqlite"
+export MG_REMINDR_DB="${XDG_DATA_HOME}/mg-remindr/remindr.sqlite"
 "$MG_REMINDR_BIN" migration apply >/dev/null
 
 due="$(date -I)"
@@ -115,7 +119,7 @@ doc = json.load(open(sys.argv[1]))
 doc["producer"]["app"] = "not-mg-remindr"
 json.dump(doc, open(sys.argv[2], "w"))' "$snapshot" "$foreign"
 check_refuses "import refuses a foreign producer" "producer" \
-    "$MG_CALR_BIN" --json --no-input interop import-todo --input "$foreign" --store "${work}/rejected.json"
+    "$MG_CALR_BIN" --json --no-input interop import-todo --input "$foreign" --store "${XDG_DATA_HOME}/mg-calr/rejected.sqlite"
 
 truncated="${work}/truncated.json"
 python3 -c '
@@ -124,10 +128,10 @@ doc = json.load(open(sys.argv[1]))
 doc["records"] = doc["records"][:1]
 json.dump(doc, open(sys.argv[2], "w"))' "$snapshot" "$truncated"
 check_refuses "import refuses a record count that disagrees with completeness" "" \
-    "$MG_CALR_BIN" --json --no-input interop import-todo --input "$truncated" --store "${work}/rejected.json"
+    "$MG_CALR_BIN" --json --no-input interop import-todo --input "$truncated" --store "${XDG_DATA_HOME}/mg-calr/rejected.sqlite"
 
 check "a refused import leaves no store behind" "no" \
-    "$([[ -e "${work}/rejected.json" ]] && echo yes || echo no)"
+    "$([[ -e "${XDG_DATA_HOME}/mg-calr/rejected.sqlite" ]] && echo yes || echo no)"
 
 printf '%d checks, %d failures\n' "$checks" "$failures"
 [[ "$failures" -eq 0 ]]
