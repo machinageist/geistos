@@ -65,7 +65,7 @@ fn main() {
 
             "cd" => {
                 let new_dir = match args.first() {
-                    Some(path) => *path,
+                    Some(path) => (*path).to_string(),
 
                     None => match env::var("HOME") {
                         Ok(home) => home,
@@ -83,38 +83,21 @@ fn main() {
             // -----------------------------------------------------------------
             // External commands
             // -----------------------------------------------------------------
-
-            external_cmd => {
-                match Command::new(external_cmd)
-                    .args(&args)
-                    .spawn()
-                {
-                    Ok(mut child) => {
-                        if let Err(e) = child.wait() {
-                            eprintln!(
-                                "Command failed during execution: {}",
-                                e
-                            );
-                        }
-                    }
-
-                    Err(e)
-                        if e.kind() == io::ErrorKind::NotFound =>
-                    {
-                        eprintln!(
-                            "{}: command not found.",
-                            external_cmd
-                        );
-                    }
-
-                    Err(e) => {
-                        eprintln!(
-                            "Failed to execute process: {}",
-                            e
-                        );
+            external_cmd => match Command::new(external_cmd).args(&args).spawn() {
+                Ok(mut child) => {
+                    if let Err(e) = child.wait() {
+                        eprintln!("Command failed during execution: {}", e);
                     }
                 }
-            }
+
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    eprintln!("{}: command not found.", external_cmd);
+                }
+
+                Err(e) => {
+                    eprintln!("Failed to execute process: {}", e);
+                }
+            },
         }
     }
 }
