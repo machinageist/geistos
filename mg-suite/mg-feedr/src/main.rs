@@ -70,7 +70,18 @@ enum Command {
         limit: usize,
     },
     /// Open a headline: articles in the browser, videos in mpv
-    Open { id: i64 },
+    Open {
+        id: i64,
+        /// Read the ID from an explicit mg-brief catalog instead of the user's default catalog
+        #[arg(long, requires = "artifact_root")]
+        catalog_db: Option<PathBuf>,
+        /// Artifact root paired with --catalog-db
+        #[arg(long, requires = "catalog_db")]
+        artifact_root: Option<PathBuf>,
+        /// Open article links in a new Firefox tab
+        #[arg(long)]
+        new_tab: bool,
+    },
     /// The ticker in the terminal
     Tui,
 }
@@ -142,9 +153,14 @@ fn main() -> Result<()> {
             Ok(())
         }
         Command::Tui => mg_feedr::tui::run(socket_path()?),
-        Command::Open { id } => {
-            let item = find(&catalog()?, id)?;
-            let target = open::open(&item)?;
+        Command::Open {
+            id,
+            catalog_db,
+            artifact_root,
+            new_tab,
+        } => {
+            let item = find(&catalog_for_open(catalog_db, artifact_root)?, id)?;
+            let target = open::open_with_options(&item, new_tab)?;
             if cli.json {
                 println!(
                     "{}",
@@ -160,6 +176,26 @@ fn main() -> Result<()> {
 fn catalog() -> Result<Store> {
     let (db, artifacts) = mg_brief::default_paths();
     Store::open(db, artifacts).context("opening mg-brief's catalog")
+}
+
+// A ticker stream's item IDs belong to its catalog. Require both explicit paths and
+// an already-existing database so a stale/missing ticker catalog never falls back
+// to the shared default or creates an empty one during an open request.
+fn catalog_for_open(db: Option<PathBuf>, artifacts: Option<PathBuf>) -> Result<Store> {
+    match (db, artifacts) {
+        (None, None) => catalog(),
+        (Some(db), Some(artifacts)) => {
+            if !db.is_file() {
+                bail!("explicit headline catalog does not exist")
+            }
+            if !artifacts.is_dir() {
+                bail!("explicit headline artifact root does not exist")
+            }
+            let db = mg_brief::database_path(Some(db))?;
+            Store::open(db, artifacts).context("opening explicit headline catalog")
+        }
+        _ => bail!("catalog database and artifact root must be provided together"),
+    }
 }
 
 // One item by id, from any source
@@ -224,4 +260,68 @@ fn stream(path: &std::path::Path, json: bool) -> Result<()> {
         }
     }
     bail!("the mg-feedr daemon stopped")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn open_command_requires_catalog_and_artifact_paths_as_a_pair() {
+        let partial = Cli::try_parse_from([
+            "mg-feedr",
+            "open",
+            "17",
+            "--catalog-db",
+            "/private/catalog.sqlite",
+        ]);
+        assert!(partial.is_err());
+
+        let complete = Cli::try_parse_from([
+            "mg-feedr",
+            "open",
+            "17",
+            "--catalog-db",
+            "/private/catalog.sqlite",
+            "--artifact-root",
+            "/private/artifacts",
+            "--new-tab",
+        ])
+        .unwrap();
+        assert!(matches!(
+            complete.command,
+            Command::Open {
+                id: 17,
+                new_tab: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn explicit_open_catalog_never_creates_or_falls_back_when_missing() {
+        let temp = TempDir::new().unwrap();
+        let missing_db = temp.path().join("missing.sqlite");
+        let artifacts = temp.path().join("artifacts");
+        std::fs::create_dir(&artifacts).unwrap();
+
+        assert!(catalog_for_open(Some(missing_db.clone()), Some(artifacts)).is_err());
+        assert!(
+            !missing_db.exists(),
+            "open must not create a fallback catalog"
+        );
+    }
+
+    #[test]
+    fn explicit_open_catalog_uses_only_the_requested_existing_store() {
+        let temp = TempDir::new().unwrap();
+        let db = temp.path().join("ticker.sqlite");
+        let artifacts = temp.path().join("artifacts");
+        std::fs::create_dir(&artifacts).unwrap();
+        drop(Store::open(&db, &artifacts).unwrap());
+
+        let store = catalog_for_open(Some(db), Some(artifacts)).unwrap();
+        assert!(store.list_sources().unwrap().is_empty());
+    }
 }

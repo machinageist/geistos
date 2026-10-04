@@ -50,14 +50,24 @@ pub fn target(item: &WireItem) -> Option<Target> {
         .or_else(|| web(item.enclosure_url.as_deref()).map(Target::Player))
 }
 
+// Construct the normal handler or Firefox's explicit new-tab request. Firefox is
+// the configured default browser on this desktop; videos continue to use mpv.
+fn browser_command(url: &str, new_tab: bool) -> Command {
+    if new_tab {
+        let mut command = Command::new("firefox");
+        command.arg("--new-tab").arg(url);
+        command
+    } else {
+        let mut command = Command::new(BROWSER);
+        command.arg(url);
+        command
+    }
+}
+
 // Start the browser or player and let it run on its own
-pub fn launch(target: &Target) -> Result<()> {
+pub fn launch(target: &Target, new_tab: bool) -> Result<()> {
     let mut command = match target {
-        Target::Browser(url) => {
-            let mut c = Command::new(BROWSER);
-            c.arg(url);
-            c
-        }
+        Target::Browser(url) => browser_command(url, new_tab),
         Target::Player(url) => {
             let mut c = Command::new(PLAYER);
             c.args(PLAYER_ARGS).arg("--").arg(url);
@@ -75,10 +85,14 @@ pub fn launch(target: &Target) -> Result<()> {
 
 // Open an item, or say plainly why it cannot be
 pub fn open(item: &WireItem) -> Result<Target> {
+    open_with_options(item, false)
+}
+
+pub fn open_with_options(item: &WireItem, new_tab: bool) -> Result<Target> {
     let Some(chosen) = target(item) else {
         bail!("item {} has no link that can be opened", item.id)
     };
-    launch(&chosen)?;
+    launch(&chosen, new_tab)?;
     Ok(chosen)
 }
 
@@ -142,5 +156,29 @@ mod tests {
         assert_eq!(target(&item(Some("file:///etc/passwd"), None, true)), None);
         assert_eq!(target(&item(None, None, false)), None);
         assert!(open(&item(Some("file:///etc/passwd"), None, false)).is_err());
+    }
+
+    #[test]
+    fn explicit_new_tab_uses_firefox_argv_without_shell_interpolation() {
+        let url = "https://example.test/story?id=4";
+        let command = browser_command(url, true);
+        assert_eq!(command.get_program().to_string_lossy(), "firefox");
+        assert_eq!(
+            command
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["--new-tab".to_string(), url.to_string()]
+        );
+
+        let normal = browser_command(url, false);
+        assert_eq!(normal.get_program().to_string_lossy(), BROWSER);
+        assert_eq!(
+            normal
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec![url.to_string()]
+        );
     }
 }

@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use chrono::{DateTime, Local};
+use mg_brief::feed::sanitize_terminal_text;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -62,7 +63,7 @@ impl State {
             Feed::Line(line) => self.take_line(*line),
             Feed::Gone(reason) => {
                 self.connected = false;
-                self.message = Some(reason);
+                self.message = Some(sanitize_terminal_text(&reason));
             }
         }
     }
@@ -77,7 +78,10 @@ impl State {
                 self.items.clear();
                 self.selected = 0;
             }
-            Line::Item(item) => {
+            Line::Item(mut item) => {
+                item.source = sanitize_terminal_text(&item.source);
+                item.title = sanitize_terminal_text(&item.title);
+                item.summary = item.summary.as_deref().map(sanitize_terminal_text);
                 // keep the cursor on the same headline as new ones arrive above it
                 if !self.items.is_empty() {
                     self.selected += 1;
@@ -170,9 +174,13 @@ fn event_loop(terminal: &mut DefaultTerminal, rx: &Receiver<Feed>) -> Result<()>
             Effect::Quit => return Ok(()),
             Effect::Open(item) => {
                 state.message = Some(match open::open(&item) {
-                    Ok(open::Target::Player(_)) => format!("playing: {}", item.title),
-                    Ok(open::Target::Browser(_)) => format!("opened: {}", item.title),
-                    Err(e) => format!("{e:#}"),
+                    Ok(open::Target::Player(_)) => {
+                        format!("playing: {}", sanitize_terminal_text(&item.title))
+                    }
+                    Ok(open::Target::Browser(_)) => {
+                        format!("opened: {}", sanitize_terminal_text(&item.title))
+                    }
+                    Err(e) => sanitize_terminal_text(&format!("{e:#}")),
                 });
             }
         }
@@ -221,8 +229,11 @@ pub fn draw(frame: &mut Frame, state: &State) {
         .map(|item| {
             let mut spans = vec![
                 Span::styled(format!("{}  ", clock(item)), Style::new().fg(DIM)),
-                Span::styled(format!("{:<14} ", item.source), Style::new().fg(ACCENT)),
-                Span::raw(item.title.clone()),
+                Span::styled(
+                    format!("{:<14} ", sanitize_terminal_text(&item.source)),
+                    Style::new().fg(ACCENT),
+                ),
+                Span::raw(sanitize_terminal_text(&item.title)),
             ];
             if item.has_video {
                 spans.push(Span::styled(
@@ -244,13 +255,15 @@ pub fn draw(frame: &mut Frame, state: &State) {
     let summary = state
         .items
         .get(state.selected)
-        .and_then(|i| i.summary.clone())
+        .and_then(|item| item.summary.as_deref())
+        .map(sanitize_terminal_text)
         .unwrap_or_default();
     frame.render_widget(Paragraph::new(summary).fg(DIM), detail);
 
     let keys = state
         .message
-        .clone()
+        .as_deref()
+        .map(sanitize_terminal_text)
         .unwrap_or_else(|| "enter open · j/k move · g/G top/bottom · q quit".into());
     frame.render_widget(Paragraph::new(keys).fg(DIM), bottom);
 }
@@ -285,6 +298,16 @@ mod tests {
             image_url: None,
             has_video: video,
         }
+    }
+
+    fn terminal_active_control(c: char) -> bool {
+        matches!(c, '\u{0000}'..='\u{001f}' | '\u{007f}'..='\u{009f}')
+    }
+
+    fn hostile_terminal_text() -> String {
+        let esc = char::from_u32(27).expect("ESC");
+        let bel = char::from_u32(7).expect("BEL");
+        format!("unsafe{esc}]8;;https://evil.test{bel}{esc}[2J")
     }
 
     #[test]
@@ -360,5 +383,58 @@ mod tests {
         // an empty, disconnected ticker at a tiny size must not panic
         let mut tiny = Terminal::new(TestBackend::new(10, 3)).unwrap();
         tiny.draw(|f| draw(f, &State::default())).unwrap();
+    }
+
+    #[test]
+    fn external_feed_text_and_status_never_reach_the_test_backend_as_controls() {
+        let hostile = hostile_terminal_text();
+        let mut state = State::default();
+        state.take(Feed::Line(Box::new(Line::Hello {
+            version: "x".into(),
+            followed: 1,
+        })));
+        state.take(Feed::Line(Box::new(Line::Item(WireItem {
+            id: 1,
+            source: hostile.clone(),
+            title: hostile.clone(),
+            url: None,
+            summary: Some(hostile.clone()),
+            published_at: None,
+            first_seen_at: "2026-09-19T12:00:00+00:00".into(),
+            enclosure_url: None,
+            enclosure_type: None,
+            image_url: None,
+            has_video: false,
+        }))));
+        state.take(Feed::Gone(hostile));
+
+        assert!(
+            !state.items[0].source.chars().any(terminal_active_control)
+                && !state.items[0].title.chars().any(terminal_active_control)
+                && !state.items[0]
+                    .summary
+                    .as_deref()
+                    .is_some_and(|text| text.chars().any(terminal_active_control))
+                && !state
+                    .message
+                    .as_deref()
+                    .is_some_and(|text| text.chars().any(terminal_active_control)),
+            "state must retain only terminal-safe display text"
+        );
+
+        let mut terminal = Terminal::new(TestBackend::new(180, 8)).unwrap();
+        terminal.draw(|frame| draw(frame, &state)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            !screen.chars().any(terminal_active_control),
+            "TestBackend must not receive ESC, BEL, or another C0/C1 control"
+        );
+        assert!(screen.contains("]8;;https://evil.test") && screen.contains("[2J"));
     }
 }
