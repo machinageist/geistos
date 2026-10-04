@@ -1,0 +1,12 @@
+# Author: Jeff
+# Date: 2026-10-03
+# Description: Refresh every mg-streamr podcast feed and report partial failures
+# Notes: Installed by bin/geist-install; logs the structured per-show report to the journal.
+[Unit]
+Description=Refresh mg-streamr podcast feeds
+
+[Service]
+Type=oneshot
+ExecStart=@BINDIR@/mg-streamr --json podcast refresh
+TimeoutStartSec=35min
+NoNewPrivileges=yes

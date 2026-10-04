@@ -1,0 +1,15 @@
+# Author: Jeff
+# Date: 2026-10-03
+# Description: Refresh podcast feeds every six hours
+# Notes: Catch up one missed run after the user manager starts; jitter avoids synchronized requests.
+[Unit]
+Description=Refresh mg-streamr podcast feeds every six hours
+
+[Timer]
+OnCalendar=*-*-* 00/6:00:00
+Persistent=true
+RandomizedDelaySec=15min
+Unit=mg-streamr-refresh.service
+
+[Install]
+WantedBy=timers.target
