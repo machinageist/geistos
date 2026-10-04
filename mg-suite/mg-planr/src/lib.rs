@@ -14,6 +14,8 @@ use std::time::Duration;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
+mod secure_db;
+
 const MIN_NONEMPTY_TEXT: &str = "value must not be empty";
 
 macro_rules! define_id {
@@ -1058,7 +1060,7 @@ impl Plan {
 }
 
 // ---- where a store lives ----
-// One file per named store under the XDG data folder, or the exact file $MG_PLANR_DB names
+// One file per named store under the XDG data folder; $MG_PLANR_DB may select only its leaf
 
 const STORE_PATH_ENV: &str = "MG_PLANR_DB";
 const STORE_DIRECTORY: &str = "mg-planr";
@@ -1077,12 +1079,21 @@ fn store_path_with_override(
     name: &str,
     override_path: Option<OsString>,
 ) -> Result<PathBuf, StoreError> {
-    // the override names a file outright and wins, the way the rest of the suite does it
+    // An override may only name a file in this app's private directory. That keeps descriptor
+    // validation and SQLite's later pathname open inside one application-owned parent.
     if let Some(path) = override_path {
         if path.is_empty() {
             return Err(StoreError::InvalidStoreName);
         }
-        return Ok(PathBuf::from(path));
+        let directory = data_directory().join(STORE_DIRECTORY);
+        let path = PathBuf::from(path);
+        if path.is_absolute()
+            && path.file_name().is_some_and(|name| !name.is_empty())
+            && path.parent() == Some(directory.as_path())
+        {
+            return Ok(path);
+        }
+        return Err(StoreError::InvalidStoreName);
     }
     // a name is a plain file stem, never a path: it must not escape the data folder
     if name.trim().is_empty() || name.starts_with('.') || name.contains(std::path::MAIN_SEPARATOR) {
@@ -1252,12 +1263,8 @@ impl PlanStore {
     // Open (creating) one plan store file and bring its schema up to date
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
         let path = path.as_ref();
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent)?;
-            }
-        }
-        let connection = Connection::open(path)?;
+        secure_db::prepare_database_path(path)?;
+        let connection = secure_db::open_database(path)?;
         connection.busy_timeout(BUSY_TIMEOUT)?;
         // the plan document and its history are one write, so the reference must hold
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
@@ -1266,6 +1273,7 @@ impl PlanStore {
         if !mode.eq_ignore_ascii_case(WAL_JOURNAL_MODE) {
             return Err(StoreError::JournalMode(mode));
         }
+        secure_db::ensure_database_sidecars(path)?;
         let mut store = Self { connection };
         store.migrate()?;
         Ok(store)
@@ -1647,6 +1655,56 @@ mod tests {
             "sha256:abc",
         )
         .expect("evidence is complete")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_storage_is_private_repairs_modes_and_rejects_symlinks() {
+        use std::{
+            fs,
+            os::unix::fs::{symlink, PermissionsExt},
+        };
+
+        fn mode(path: &Path) -> u32 {
+            fs::metadata(path).unwrap().permissions().mode() & 0o777
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("new/plans.sqlite");
+        let store = PlanStore::open(&path).unwrap();
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        assert_eq!(mode(&path), 0o600);
+
+        store
+            .connection
+            .execute_batch("CREATE TABLE f03_probe (value INTEGER)")
+            .unwrap();
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = path.clone().into_os_string();
+            sidecar.push(suffix);
+            let sidecar = PathBuf::from(sidecar);
+            assert!(sidecar.is_file(), "SQLite creates {suffix}");
+            assert_eq!(mode(&sidecar), 0o600, "{suffix} is owner-only");
+        }
+
+        let repaired_directory = root.path().join("repaired");
+        fs::create_dir(&repaired_directory).unwrap();
+        fs::set_permissions(&repaired_directory, fs::Permissions::from_mode(0o755)).unwrap();
+        let repaired_path = repaired_directory.join("plans.sqlite");
+        fs::File::create(&repaired_path).unwrap();
+        fs::set_permissions(&repaired_path, fs::Permissions::from_mode(0o644)).unwrap();
+        PlanStore::open(&repaired_path).unwrap();
+        assert_eq!(mode(&repaired_directory), 0o700);
+        assert_eq!(mode(&repaired_path), 0o600);
+
+        let target = root.path().join("target.sqlite");
+        let link = root.path().join("link.sqlite");
+        symlink(&target, &link).unwrap();
+        assert!(PlanStore::open(&link).is_err());
+        assert!(
+            !target.exists(),
+            "SQLite never follows the protected database leaf"
+        );
     }
 
     #[test]
@@ -2479,16 +2537,21 @@ mod tests {
     }
 
     #[test]
-    fn a_store_name_resolves_under_the_data_folder_and_the_override_wins() {
+    fn a_store_name_and_override_resolve_under_the_application_data_folder() {
         assert_eq!(
             store_path_with_override("planr", None).expect("a plain name resolves"),
             data_directory().join("mg-planr/planr.sqlite")
         );
+        let allowed = data_directory().join("mg-planr/alternate.sqlite");
         assert_eq!(
-            store_path_with_override("planr", Some(OsString::from("/tmp/elsewhere.sqlite")))
-                .expect("the override resolves"),
-            PathBuf::from("/tmp/elsewhere.sqlite")
+            store_path_with_override("planr", Some(allowed.clone().into_os_string()))
+                .expect("the application-owned override resolves"),
+            allowed
         );
+        assert!(matches!(
+            store_path_with_override("planr", Some(OsString::from("/tmp/elsewhere.sqlite"))),
+            Err(StoreError::InvalidStoreName)
+        ));
         for rejected in ["", "   ", ".hidden", "../escape", "nested/name"] {
             assert!(
                 matches!(
