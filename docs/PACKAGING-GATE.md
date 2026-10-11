@@ -43,8 +43,6 @@ suite, which is what the storage move was for.
 
 ## Loose ends inherited from the old notes
 
-- `~/gauntlet-universal/` still exists at home level; the vendored copies inside `mg-calr`
-  and `mg-vaultr` were removed, this one was left alone.
 - A renamed interop producer invalidates the stored projection: delete
   `~/.local/share/mg-calr/todo-projection.json` and re-run the sync bridge. Any upgrade
   that changes interop identity needs that as a migration step.
