@@ -98,6 +98,10 @@ Everything else resolves through `$HOME` and needs no editing.
 along the way, and what to pick up next. [docs/KEYBINDINGS.md](docs/KEYBINDINGS.md)
 records the global window, panel, session, and lifecycle controls.
 
+[docs/RUST-DESKTOP-PLATFORM-PLAN.md](docs/RUST-DESKTOP-PLATFORM-PLAN.md) records
+the planning-only roadmap for the future Rust desktop; it does not reopen the
+package gate or authorize implementation.
+
 ## Not here yet
 
 - **An installer.** `dotfiles/scripts/install.sh` has the symlink-with-backup
