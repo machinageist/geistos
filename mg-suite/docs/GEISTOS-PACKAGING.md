@@ -101,8 +101,6 @@ upgrade that changes interop identity needs that as a migration step.
 
 ## Loose ends noticed nearby
 
-- `~/gauntlet-universal/` still exists at home level. The copies vendored inside
-  `mg-calr` and `mg-vaultr` were removed; this one was left alone.
 - The retired PostgreSQL databases `mg_todo` and `mg_calr` still exist on this
   machine, with the rows they held before the move. Nothing reads them; they are
   kept until the SQLite stores have been lived with, then can be dropped.
