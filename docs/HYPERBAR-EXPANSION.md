@@ -2,7 +2,7 @@
 
 Status: Jeff selected this scope on 2026-09-28. It is an approved implementation program, not a claim that the features are already done.
 
-Runtime implementation is maintained in the dotfiles repository; geistos carries only deliberately synchronized files. Preserve each repository's ownership and history, and mirror only accepted changes.
+Runtime implementation is maintained in the dotfiles repository; geistos carries only deliberately synchronized files. Preserve each repository's ownership and history, and mirror only accepted changes. The concise ticket index is [`QUICKSHELL-TICKETS.md`](QUICKSHELL-TICKETS.md); canonical ticket packets live at `~/dotfiles/docs/quickshell-tickets/README.md`. Do not implement from this mirror.
 
 ## Selected scope
 
