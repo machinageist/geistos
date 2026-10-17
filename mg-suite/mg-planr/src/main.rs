@@ -16,7 +16,7 @@ use mg_plan::{
 
 // State how every command is spelled
 fn usage() -> &'static str {
-    "usage:\n  mg-plan create <store> <plan-id> <title>\n  mg-plan show <store> <plan-id>\n  mg-plan export <store> <plan-id>\n  mg-plan import <store> <json-file>\n  mg-plan adopt-postgres <store> <json-file>\n  mg-plan add-work <store> <plan-id> <work-id> <title>\n  mg-plan add-dependency <store> <plan-id> <dependent-id> <prerequisite-id>\n  mg-plan add-criterion <store> <plan-id> <work-id> <criterion-id> <statement>\n  mg-plan start|block|unblock <store> <plan-id> <work-id>\n  mg-plan revise <store> <plan-id> <work-id> <title>\n  mg-plan verify <store> <plan-id> <work-id> <verification-id> <criterion-id> <subject-revision> <evidence-id> <producer> <source-record> <evidence-revision> <digest> <pass|fail|inconclusive|waived> <verifier>\n  mg-plan complete <store> <plan-id> <work-id>\n  mg-plan list-work <store> <plan-id>\n  mg-plan blocked <store> <plan-id>\n  mg-plan verification-gaps <store> <plan-id>\n  mg-plan add-project <store> <plan-id> <project-id> <title>\n  mg-plan add-milestone <store> <plan-id> <project-id> <milestone-id> <title>\n  mg-plan link-work <store> <plan-id> <milestone-id> <work-id>\n  mg-plan decide <store> <plan-id> <decision-id> <question> <decision> <rationale>\n  mg-plan milestones <store> <plan-id>\n  mg-plan schedule-request <store> <plan-id> <request-id> <work-id> <calendar> <requested-start> <duration-minutes>\n  mg-plan schedule-receipt <store> <plan-id> <request-id> <event-id> <calendar> <event-revision>\n  mg-plan schedules <store> <plan-id>"
+    "usage:\n  mg-plan create <store> <plan-id> <title>\n  mg-plan show <store> <plan-id>\n  mg-plan export <store> <plan-id>\n  mg-plan import <store> <json-file>\n  mg-plan adopt-postgres <store> <json-file>\n  mg-plan add-work <store> <plan-id> <work-id> <title>\n  mg-plan add-dependency <store> <plan-id> <dependent-id> <prerequisite-id>\n  mg-plan add-criterion <store> <plan-id> <work-id> <criterion-id> <statement>\n  mg-plan start|block|unblock <store> <plan-id> <work-id>\n  mg-plan revise <store> <plan-id> <work-id> <title>\n  mg-plan verify <store> <plan-id> <work-id> <verification-id> <criterion-id> <subject-revision> <evidence-id> <producer> <source-record> <evidence-revision> <digest> <pass|fail|inconclusive|waived> <verifier>\n  mg-plan complete <store> <plan-id> <work-id>\n  mg-plan list-work <store> <plan-id>\n  mg-plan blocked <store> <plan-id>\n  mg-plan gap-checklist <export-json> <plan-id> <plan-revision>\n  mg-plan verification-gaps <store> <plan-id>\n  mg-plan add-project <store> <plan-id> <project-id> <title>\n  mg-plan add-milestone <store> <plan-id> <project-id> <milestone-id> <title>\n  mg-plan link-work <store> <plan-id> <milestone-id> <work-id>\n  mg-plan decide <store> <plan-id> <decision-id> <question> <decision> <rationale>\n  mg-plan milestones <store> <plan-id>\n  mg-plan schedule-request <store> <plan-id> <request-id> <work-id> <calendar> <requested-start> <duration-minutes>\n  mg-plan schedule-receipt <store> <plan-id> <request-id> <event-id> <calendar> <event-revision>\n  mg-plan schedules <store> <plan-id>"
 }
 
 // Validate a plan identifier
@@ -77,11 +77,66 @@ fn domain(error: PlanError) -> String {
     error.to_string()
 }
 
+// Offline projection only: the caller supplies a selected owner export and its reference.
+// Matching that reference does not establish live freshness or accept any evidence.
+fn gap_checklist(
+    document: &str,
+    expected_id: &str,
+    expected_revision: u64,
+) -> Result<serde_json::Value, String> {
+    let envelope: mg_plan::PlanEnvelope =
+        serde_json::from_str(document).map_err(|_| "invalid Plan export".to_owned())?;
+    let id = plan_id(expected_id.to_owned())?;
+    if envelope.interop_schema != "mg.plan/1"
+        || envelope.kind != "plan"
+        || envelope.producer.app != "mg-plan"
+        || expected_revision == 0
+        || envelope.plan_revision != expected_revision
+        || envelope.plan.id() != &id
+    {
+        return Err("invalid or stale Plan reference".to_owned());
+    }
+    let entries: Vec<_> = envelope.plan.verification_gaps().into_iter().map(|gap| {
+        use mg_plan::VerificationGapReason::*;
+        let (explanation, source) = match gap.reason {
+            MissingVerification => ("No verification attempt is recorded.", "Run a criterion-specific test or obtain an owner inspection receipt."),
+            NonPassingVerification => ("The latest verification is failing, inconclusive, or waived.", "Inspect the failed check and obtain a fresh test result for this revision."),
+            StaleVerification => ("The verification targets an older work revision.", "Rerun the criterion check against the current work revision."),
+            MissingEvidence => ("The latest verification has no evidence references.", "Locate a revision-pinned test artifact or an authoritative source record with a digest."),
+        };
+        serde_json::json!({"work_item_id": gap.work_item_id, "criterion_id": gap.criterion_id,
+            "reason": gap.reason, "explanation": explanation, "suggested_source": source})
+    }).collect();
+    Ok(
+        serde_json::json!({"schema": "mg.plan.gap-checklist/1", "advisory": true,
+        "plan_id": id, "plan_revision": expected_revision, "entries": entries,
+        "notice": "Advisory checklist from a selected snapshot. Live freshness is unverified. Only mg-plan judges evidence and completion; an empty checklist is not completion proof."}),
+    )
+}
+
 // Dispatch one command
 fn run(args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut args = args;
     let command = args.next().ok_or_else(|| usage().to_owned())?;
     match command.as_str() {
+        "gap-checklist" => {
+            let file = args.next().ok_or_else(|| usage().to_owned())?;
+            let id = args.next().ok_or_else(|| usage().to_owned())?;
+            let revision = number(
+                args.next().ok_or_else(|| usage().to_owned())?,
+                "plan revision",
+            )?;
+            if args.next().is_some() {
+                return Err(usage().to_owned());
+            }
+            let document =
+                fs::read_to_string(file).map_err(|_| "could not read Plan export".to_owned())?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&gap_checklist(&document, &id, revision)?)
+                    .map_err(|e| e.to_string())?
+            );
+        }
         "create" => {
             let db = args.next().ok_or_else(|| usage().to_owned())?;
             let id = plan_id(args.next().ok_or_else(|| usage().to_owned())?)?;
