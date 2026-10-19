@@ -1,0 +1,23 @@
+[package]
+name = "mg-vault-service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "mg-vault-indexd"
+path = "src/main.rs"
+
+[dependencies]
+mg-vault-client = { path = "../mg-vault-client" }
+mg-vault-core = { path = "../mg-vault-core" }
+rustix.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
