@@ -1,0 +1,298 @@
+use chrono::{DateTime, NaiveDate, Utc};
+use mg_remindr::{
+    domain::{Lifecycle, Todo, TodoDue, TodoId, Version},
+    human::{
+        DueChange, HumanError, amend, close, handle, new_todo, parse_due, render, reopen,
+        resolve_handle, resolve_zone,
+    },
+};
+
+fn instant(value: &str) -> DateTime<Utc> {
+    value.parse().unwrap()
+}
+
+fn today() -> NaiveDate {
+    NaiveDate::from_ymd_opt(2026, 9, 4).unwrap()
+}
+
+fn todo(title: &str, due: Option<TodoDue>) -> Todo {
+    new_todo(title.to_owned(), due, instant("2026-09-04T12:00:00Z")).unwrap()
+}
+
+#[test]
+fn due_values_are_written_the_way_a_person_writes_them() {
+    let zone = "America/New_York";
+    assert_eq!(
+        parse_due("today", zone, today()).unwrap(),
+        TodoDue::date(today(), zone.to_owned()).unwrap()
+    );
+    assert_eq!(
+        parse_due("Tomorrow", zone, today()).unwrap(),
+        TodoDue::date(
+            NaiveDate::from_ymd_opt(2026, 9, 5).unwrap(),
+            zone.to_owned()
+        )
+        .unwrap()
+    );
+    assert_eq!(
+        parse_due(" 2026-12-25 ", zone, today()).unwrap(),
+        TodoDue::date(
+            NaiveDate::from_ymd_opt(2026, 12, 25).unwrap(),
+            zone.to_owned()
+        )
+        .unwrap()
+    );
+
+    // A local wall time is anchored to its zone's offset on that date, not to UTC
+    let summer = parse_due("2026-09-08T14:00", zone, today()).unwrap();
+    let winter = parse_due("2026-01-08 14:00", zone, today()).unwrap();
+    match (summer, winter) {
+        (TodoDue::Timed { at: summer, .. }, TodoDue::Timed { at: winter, .. }) => {
+            assert_eq!(summer.to_rfc3339(), "2026-09-08T14:00:00-04:00");
+            assert_eq!(winter.to_rfc3339(), "2026-01-08T14:00:00-05:00");
+        }
+        other => panic!("expected timed due values, got {other:?}"),
+    }
+}
+
+#[test]
+fn unreadable_and_unnamed_due_values_fail_closed() {
+    assert_eq!(
+        parse_due("next thursday", "America/New_York", today()),
+        Err(HumanError::UnreadableDue)
+    );
+    assert_eq!(
+        parse_due("today", "Mars/Olympus", today()),
+        Err(HumanError::UnknownZone)
+    );
+    // 02:30 does not exist in New York on the spring transition
+    assert_eq!(
+        parse_due("2026-03-08T02:30", "America/New_York", today()),
+        Err(HumanError::UnreadableDue)
+    );
+}
+
+#[test]
+fn zone_resolution_prefers_the_request_then_the_environment() {
+    assert_eq!(
+        resolve_zone(Some("Europe/Berlin")).unwrap(),
+        "Europe/Berlin"
+    );
+    assert_eq!(
+        resolve_zone(Some("Mars/Olympus")),
+        Err(HumanError::UnknownZone)
+    );
+    // The system fallback must produce a zone this machine can actually name
+    let resolved = resolve_zone(None).unwrap();
+    assert!(resolved.parse::<chrono_tz::Tz>().is_ok());
+}
+
+#[test]
+fn handles_are_stable_across_identifiers_that_share_a_timestamp() {
+    let first = todo("first", None);
+    let second = todo("second", None);
+    assert_ne!(handle(first.id()), handle(second.id()));
+    assert_eq!(handle(first.id()).len(), 8);
+    assert!(first.id().to_string().ends_with(&handle(first.id())));
+}
+
+#[test]
+fn a_handle_names_one_todo_or_refuses_to_guess() {
+    let first = todo("first", None);
+    let second = todo("second", None);
+    let todos = vec![first.clone(), second.clone()];
+
+    assert_eq!(
+        resolve_handle(&todos, &handle(first.id())).unwrap(),
+        first.id()
+    );
+    assert_eq!(
+        resolve_handle(&todos, &first.id().to_string()).unwrap(),
+        first.id()
+    );
+    assert_eq!(
+        resolve_handle(&todos, "  "),
+        Err(HumanError::NoMatch("  ".to_owned()))
+    );
+    assert_eq!(
+        resolve_handle(&todos, "zzzzzzzz"),
+        Err(HumanError::NoMatch("zzzzzzzz".to_owned()))
+    );
+
+    // Both identifiers begin with the UUIDv7 millisecond timestamp
+    let shared = &first.id().to_string()[..8];
+    assert!(second.id().to_string().starts_with(shared));
+    assert!(matches!(
+        resolve_handle(&todos, shared),
+        Err(HumanError::Ambiguous(_, matches)) if matches.len() == 2
+    ));
+}
+
+#[test]
+fn amending_changes_only_what_was_asked_for_and_advances_the_version() {
+    let due = TodoDue::date(today(), "US/Pacific".to_owned()).unwrap();
+    let open = todo("pay rent", Some(due.clone()));
+    let at = instant("2026-09-05T09:00:00Z");
+
+    // A title alone leaves the due value where it was
+    let retitled = amend(&open, Some("pay the rent".to_owned()), DueChange::Keep, at).unwrap();
+    assert_eq!(retitled.title(), "pay the rent");
+    assert_eq!(retitled.due(), Some(&due));
+    assert_eq!(retitled.version(), Version::try_from_value(2).unwrap());
+    assert_eq!(retitled.created_at(), open.created_at());
+    assert_eq!(retitled.lifecycle(), Lifecycle::Open);
+
+    // Clearing is distinct from leaving alone, which one Option cannot express
+    let cleared = amend(&open, None, DueChange::Clear, at).unwrap();
+    assert_eq!(cleared.title(), "pay rent");
+    assert_eq!(cleared.due(), None);
+
+    let moved = TodoDue::date(
+        NaiveDate::from_ymd_opt(2026, 9, 20).unwrap(),
+        "US/Pacific".to_owned(),
+    )
+    .unwrap();
+    let rescheduled = amend(&open, None, DueChange::Set(moved.clone()), at).unwrap();
+    assert_eq!(rescheduled.due(), Some(&moved));
+    assert_eq!(rescheduled.title(), "pay rent");
+}
+
+#[test]
+fn amending_refuses_a_no_op_and_anything_already_closed() {
+    let open = todo("pay rent", None);
+    let at = instant("2026-09-05T09:00:00Z");
+
+    assert_eq!(
+        amend(&open, Some("pay rent".to_owned()), DueChange::Keep, at),
+        Err(HumanError::NothingToChange)
+    );
+    assert_eq!(
+        amend(&open, None, DueChange::Keep, at),
+        Err(HumanError::NothingToChange)
+    );
+
+    // Editing settled history is not an edit
+    let done = close(&open, Lifecycle::Completed, at).unwrap();
+    assert_eq!(
+        amend(&done, Some("late".to_owned()), DueChange::Keep, at),
+        Err(HumanError::AlreadyClosed("completed"))
+    );
+}
+
+#[test]
+fn an_amendment_cannot_be_dated_before_the_row_it_changes() {
+    let open = todo("pay rent", None);
+    // A backward clock must not move the row outside its own history
+    let backwards = instant("2026-09-01T00:00:00Z");
+    let amended = amend(&open, Some("later".to_owned()), DueChange::Keep, backwards).unwrap();
+    assert_eq!(amended.updated_at(), open.updated_at());
+}
+
+#[test]
+fn closing_advances_the_version_and_records_the_transition_time() {
+    let open = todo("pay rent", None);
+    let at = instant("2026-09-04T13:00:00Z");
+
+    let done = close(&open, Lifecycle::Completed, at).unwrap();
+    assert_eq!(done.lifecycle(), Lifecycle::Completed);
+    assert_eq!(done.completed_at(), Some(at));
+    assert_eq!(done.trashed_at(), None);
+    assert_eq!(done.version(), Version::try_from_value(2).unwrap());
+    assert_eq!(done.created_at(), open.created_at());
+
+    let trashed = close(&open, Lifecycle::Trashed, at).unwrap();
+    assert_eq!(trashed.trashed_at(), Some(at));
+    assert_eq!(trashed.completed_at(), None);
+
+    assert_eq!(
+        close(&done, Lifecycle::Completed, at),
+        Err(HumanError::AlreadyClosed("completed"))
+    );
+}
+
+#[test]
+fn a_backward_clock_cannot_place_a_transition_outside_the_rows_history() {
+    let open = todo("pay rent", None);
+    let earlier = instant("2026-09-04T11:00:00Z");
+    let done = close(&open, Lifecycle::Completed, earlier).unwrap();
+    assert_eq!(done.completed_at(), Some(open.updated_at()));
+    assert_eq!(done.updated_at(), open.updated_at());
+}
+
+#[test]
+fn added_todos_are_open_with_generated_identity_and_matching_timestamps() {
+    let at = instant("2026-09-04T12:00:00Z");
+    let due = TodoDue::date(today(), "America/New_York".to_owned()).unwrap();
+    let todo = new_todo("water the plants".to_owned(), Some(due.clone()), at).unwrap();
+    assert_eq!(todo.lifecycle(), Lifecycle::Open);
+    assert_eq!(todo.version(), Version::new());
+    assert_eq!(todo.created_at(), at);
+    assert_eq!(todo.updated_at(), at);
+    assert_eq!(todo.due(), Some(&due));
+    assert_ne!(todo.id(), TodoId::new());
+
+    assert!(matches!(
+        new_todo("   ".to_owned(), None, at),
+        Err(HumanError::Domain(_))
+    ));
+}
+
+#[test]
+fn rendering_states_the_handle_the_due_value_and_a_closed_lifecycle() {
+    let dated = todo(
+        "pay rent",
+        Some(TodoDue::date(today(), "America/New_York".to_owned()).unwrap()),
+    );
+    let line = render(&dated);
+    assert!(line.starts_with(&handle(dated.id())));
+    assert!(line.contains("pay rent"));
+    assert!(line.contains("2026-09-04"));
+    assert!(!line.contains("(done)"));
+
+    assert!(render(&todo("read", None)).contains("no due date"));
+    let done = close(
+        &dated,
+        Lifecycle::Completed,
+        instant("2026-09-04T13:00:00Z"),
+    )
+    .unwrap();
+    assert!(render(&done).contains("(done)"));
+}
+
+#[test]
+fn restoring_clears_the_transition_time_and_advances_the_version() {
+    let open = todo("renew passport", None);
+    let closed_at = instant("2026-09-04T13:00:00Z");
+    let reopened_at = instant("2026-09-04T14:00:00Z");
+
+    for lifecycle in [Lifecycle::Completed, Lifecycle::Trashed] {
+        let closed = close(&open, lifecycle, closed_at).unwrap();
+        let restored = reopen(&closed, reopened_at).unwrap();
+        assert_eq!(restored.lifecycle(), Lifecycle::Open);
+        assert_eq!(restored.completed_at(), None);
+        assert_eq!(restored.trashed_at(), None);
+        assert_eq!(restored.version(), Version::try_from_value(3).unwrap());
+        assert_eq!(restored.created_at(), open.created_at());
+        assert_eq!(restored.updated_at(), reopened_at);
+        assert_eq!(restored.title(), open.title());
+    }
+}
+
+#[test]
+fn restoring_keeps_the_due_value_and_refuses_an_open_todo() {
+    let due = TodoDue::date(today(), "America/New_York".to_owned()).unwrap();
+    let open = todo("pay rent", Some(due.clone()));
+    let at = instant("2026-09-04T13:00:00Z");
+
+    let restored = reopen(&close(&open, Lifecycle::Trashed, at).unwrap(), at).unwrap();
+    assert_eq!(restored.due(), Some(&due));
+    assert_eq!(reopen(&open, at), Err(HumanError::AlreadyOpen));
+}
+
+#[test]
+fn a_backward_clock_cannot_move_a_restored_todo_into_its_own_past() {
+    let open = todo("pay rent", None);
+    let closed = close(&open, Lifecycle::Completed, instant("2026-09-04T13:00:00Z")).unwrap();
+    let restored = reopen(&closed, instant("2026-09-04T11:00:00Z")).unwrap();
+    assert_eq!(restored.updated_at(), closed.updated_at());
+}

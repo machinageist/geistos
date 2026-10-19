@@ -1,0 +1,121 @@
+# mg-remindr
+
+`mg-remindr` is the local todo authority for the Geist suite, kept in one SQLite file. It owns
+todos, projects, tags, relationships, lifecycle, versions, and the recorded
+transition times behind them, and produces the immutable projection `mg-calr`
+reads for its agenda. Recurrence and reminder delivery have persistence but are
+not yet part of the todo aggregate or its export.
+
+## Keeping reminders
+
+```text
+mg-remindr add "Pay rent" --due today
+mg-remindr add "Dentist" --due 2026-09-08T14:00
+mg-remindr ls
+mg-remindr done <handle>
+mg-remindr rm <handle>
+mg-remindr restore <handle>
+```
+
+`--due` accepts `today`, `tomorrow`, `YYYY-MM-DD`, or `YYYY-MM-DDTHH:MM`.
+`--timezone` names the IANA zone the due value is written in and defaults to the
+system zone resolved from `TZ` or `/etc/localtime`; a local time that does not
+exist or repeats across a transition is refused rather than guessed. `ls` shows
+open reminders; `--all` includes completed and trashed ones, which is how a
+handle is found for `restore`. Add `--json` to any
+of these for the stored domain object.
+
+The handle in `ls` is the identifier's trailing characters. UUIDv7 leads with a
+millisecond timestamp, so reminders added in the same second share their leading
+digits; `done` and `rm` accept the handle, a full identifier, or any unambiguous
+trailing or leading part of one.
+
+## Automation surface
+
+```text
+mg-remindr migration status|apply
+mg-remindr project create|find|list|replace
+mg-remindr tag create|find|list|replace
+mg-remindr todo create|find|list|replace
+mg-remindr interop export
+```
+
+Create and replace accept complete validated domain objects through `--json`;
+replace also requires `--expected-version`. Every command emits JSON, and invalid
+input, missing records, conflicts, or storage failures exit nonzero with stable
+redacted errors.
+
+`interop export` writes one deterministic `mg.interop/1` snapshot read inside a
+single repeatable-read transaction, carrying the monotonic authority revision.
+
+## Reaching the calendar
+
+`mg-calr` never opens this database. Refresh its agenda projection explicitly:
+
+```text
+mg-remindr interop export > snapshot.json
+mg-calr interop import-todo --input snapshot.json \
+  --store ~/.local/share/mg-calr/todo-projection.json
+mg-calr agenda --start 2026-09-04 --end 2026-09-05 --timezone America/New_York
+```
+
+Only reminders with a due value appear on a day agenda. Completed reminders are
+hidden unless `mg-calr agenda --include-completed` is passed.
+
+## The store
+
+One SQLite file, no server to provision. With nothing configured it is
+`$XDG_DATA_HOME/mg-remindr/remindr.sqlite`, created on first use:
+
+```bash
+mg-remindr migration apply
+```
+
+`--db`, then `MG_REMINDR_DB`, then `$XDG_CONFIG_HOME/mg-remindr/config.toml`
+override that default. The file is opened in WAL, with foreign keys on, so a
+reader works while a writer holds it. Every command parses its input before it
+opens the store, so unreadable input never creates one.
+
+## Adopting the retired PostgreSQL rows
+
+A store that mg-remindr has never written can take the old database's rows as they
+stand, keeping each reminder's identity, version and recorded times — which an
+interop import could not, because a todo at version three is neither a new todo nor
+a version-matched replacement:
+
+```bash
+psql -d mg_todo -tAc "
+select json_build_object(
+  'projects', coalesce((select json_agg(p) from projects p), '[]'::json),
+  'tags', coalesce((select json_agg(t) from tags t), '[]'::json),
+  'todos', coalesce((select json_agg(x) from todos x), '[]'::json),
+  'authority_revision', (select revision from mg_remindr_authority_state where singleton)
+)" > mg_todo.json
+mg-remindr interop adopt-postgres mg_todo.json
+```
+
+It refuses a store that already holds reminders, and refuses an export carrying tag
+links, parents, dependencies, recurrence or reminder deliveries rather than dropping
+them — that database had none, and the path was not built for what it never held.
+
+## Development
+
+```bash
+cargo fmt --all -- --check
+TMPDIR=/dev/shm cargo clippy --all-targets --all-features -- -D warnings
+TMPDIR=/dev/shm cargo test --all-targets
+git diff --check
+```
+
+The repository tests each take a store in a throwaway directory, so they run
+everywhere with nothing to provision and nothing to opt into.
+
+## Deferred
+
+Recurrence and reminders in the todo aggregate and its export, reminder delivery,
+plan-native vocabulary, interop import, migration cutover, and compatibility
+adapter removal.
+
+## License
+
+MIT. See `LICENSE`.
