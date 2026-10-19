@@ -13,8 +13,10 @@ integration uses stable identifiers, versioned envelopes, provenance, typed link
 and explicit request/receipt boundaries. No application reads or mutates another
 application's database.
 
-This repository is the umbrella: it holds suite-level documentation only. Each
-application below is a separate Git repository with its own history and remote.
+This directory is the umbrella: suite-level documentation lives in `docs/`, and
+each application below is a subdirectory with its own Cargo project. The suite is
+tracked inside the geistos repository; until 2026-10-19 each application was a
+separate repository, and its history was merged in intact.
 
 ## Applications
 

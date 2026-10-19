@@ -3,9 +3,9 @@
 Status: notes, not a decision. Nothing here is committed to a shape yet.
 
 `geistos` now exists as a repository at `~/geistos`, holding the Hyprland and
-Quickshell configuration. This suite lives inside it at `~/geistos/mg-suite` and
-remains a separate repository, ignored there. The installer described below is
-still unwritten.
+Quickshell configuration. This suite lives inside it at `~/geistos/mg-suite` and,
+since 2026-10-19, is tracked there rather than kept as a separate repository. The
+installer described below is still unwritten.
 
 The goal is one downloadable thing that installs the Geist application suite and
 its Hyprland/Quickshell integration together, in the spirit of Omarchy. These are

@@ -1,8 +1,3 @@
-# The application suite is its own repository with its own history and remote.
-# geistos tracks the desktop configuration and, in time, the installer that
-# pins and builds the suite.
-/mg-suite/
-
 # The operations manual's build output; docs/manual/build.sh regenerates both
 /docs/manual/*.epub
 /docs/manual/images/*.png

@@ -3,8 +3,8 @@
 A local-first Linux workstation: the Geist application suite plus the Hyprland
 and Quickshell configuration that surfaces it on the desktop.
 
-This repository is early. Today it holds the desktop configuration, the user
-units, and `bin/geist-install` — which builds the suite from this machine's
+This repository is early. Today it holds the application suite, the desktop
+configuration, the user units, and `bin/geist-install` — which builds the suite from this machine's
 checkouts and installs it for this user. Distribution packaging is deliberately
 gated: see `docs/PACKAGING-GATE.md`.
 
@@ -16,12 +16,12 @@ geistos/
   config/hypr/        Hyprland: keybindings, autostart, look and feel, lock, idle
   config/quickshell/  The shell: bar, launcher, panels, services, 38 themes
   systemd/            User units for the suite's daemons
-  mg-suite/           The application suite — a separate repository
+  mg-suite/           The application suite: one directory per Rust application
 ```
 
-`mg-suite/` is not tracked here. It is its own repository with its own history,
-and it in turn treats each of its six applications as a separate repository. The
-plan is for geistos to pin them by commit rather than vendor them.
+`mg-suite/` holds one directory per application, each its own Cargo project.
+Until 2026-10-19 the suite and each application were separate repositories; their
+full histories were merged here, so `git log -- mg-suite/<app>` shows every commit.
 
 ## The desktop
 
