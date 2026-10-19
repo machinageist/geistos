@@ -4,9 +4,9 @@ A local-first Linux workstation: the Geist application suite plus the Hyprland
 and Quickshell configuration that surfaces it on the desktop.
 
 This repository is early. Today it holds the application suite, the desktop
-configuration, the user units, and `bin/geist-install` — which builds the suite from this machine's
-checkouts and installs it for this user. Distribution packaging is deliberately
-gated: see `docs/PACKAGING-GATE.md`.
+configuration, the user units, and `bin/geist-install` — which builds the suite
+from this machine's checkouts and installs it for this user. Distribution
+packaging is deliberately gated: see `docs/PACKAGING-GATE.md`.
 
 ## Layout
 
