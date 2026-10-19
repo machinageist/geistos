@@ -1,0 +1,34 @@
+# Application repositories.
+# Each subdirectory is an independent Git repository with its own remote and
+# history. This umbrella repository tracks only suite-level docs, so the
+# applications are ignored here rather than nested or vendored.
+/mg-briefr/
+/mg-calcr/
+/mg-calr/
+/mg-contactr/
+/mg-planr/
+/mg-remindr/
+/mg-vaultr/
+/mg-feedr/
+/mg-shellr/
+/mg-streamr/
+/mg-terrm/
+/mg-taskr/
+
+# Local agent session state
+/.claude/
+/.sessions
+
+# Editor and OS noise
+*.swp
+*~
+.idea/
+.vscode/
+.DS_Store
+
+
+# Added by cargo
+
+/target
+/mg-bookr/
+gititerate.sh
