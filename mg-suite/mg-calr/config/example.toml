@@ -1,0 +1,6 @@
+[database]
+# Where the one SQLite file lives. Omit this section for the default,
+# $XDG_DATA_HOME/mg-calr/calr.sqlite.
+# path = "/home/your-os-user/.local/share/mg-calr/calr.sqlite"
+
+# MG_CALR_DB overrides this file for one run, and --db overrides both.
