@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="640" viewBox="0 0 1000 640" font-family="Noto Sans, DejaVu Sans, sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6475"/>
+    </marker>
+  </defs>
+  <rect width="1000" height="640" fill="#ffffff"/>
+
+  <!-- Entry points -->
+  <text x="40" y="34" font-size="15" fill="#5b6475" font-weight="600" letter-spacing="1">THREE WAYS IN</text>
+  <rect x="60" y="50" width="250" height="56" rx="28" fill="#e6f4f7" stroke="#0e7490" stroke-width="2"/>
+  <text x="185" y="85" font-size="20" fill="#0b4f63" text-anchor="middle" font-weight="600">Bar &amp; panels</text>
+  <rect x="345" y="50" width="250" height="56" rx="28" fill="#e6f4f7" stroke="#0e7490" stroke-width="2"/>
+  <text x="470" y="85" font-size="20" fill="#0b4f63" text-anchor="middle" font-weight="600">Launcher</text>
+  <rect x="690" y="50" width="250" height="56" rx="28" fill="#f1ecf9" stroke="#6d4fb3" stroke-width="2"/>
+  <text x="815" y="85" font-size="20" fill="#47307f" text-anchor="middle" font-weight="600">Terminal</text>
+
+  <!-- Shell -->
+  <line x1="185" y1="106" x2="185" y2="150" stroke="#5b6475" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="470" y1="106" x2="470" y2="150" stroke="#5b6475" stroke-width="2" marker-end="url(#arrow)"/>
+  <rect x="60" y="152" width="535" height="82" rx="12" fill="#f5f6f8" stroke="#9aa3b2" stroke-width="2"/>
+  <text x="327" y="186" font-size="21" fill="#1f2430" text-anchor="middle" font-weight="700">The desktop shell (Quickshell)</text>
+  <text x="327" y="214" font-size="16" fill="#5b6475" text-anchor="middle">shows your data, stores none of it</text>
+
+  <line x1="327" y1="234" x2="327" y2="300" stroke="#5b6475" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="342" y="272" font-size="15" fill="#5b6475">runs each app's command</text>
+  <line x1="815" y1="106" x2="815" y2="300" stroke="#5b6475" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="830" y="210" font-size="15" fill="#5b6475">every feature</text>
+
+  <!-- Suite -->
+  <rect x="30" y="302" width="940" height="318" rx="16" fill="#fbfbfc" stroke="#c9ced8" stroke-width="2" stroke-dasharray="6 5"/>
+  <text x="50" y="332" font-size="15" fill="#5b6475" font-weight="600" letter-spacing="1">THE GEIST SUITE · EACH APP OWNS ITS OWN DATA</text>
+
+  <g font-size="17">
+    <!-- row 1 -->
+    <g transform="translate(50,350)">
+      <rect width="140" height="100" rx="10" fill="#ffffff" stroke="#c9ced8" stroke-width="2"/>
+      <text x="70" y="38" text-anchor="middle" font-weight="700" fill="#1f2430">mg-remindr</text>
+      <text x="70" y="64" text-anchor="middle" font-size="13" fill="#5b6475">reminders</text>
+      <text x="70" y="84" text-anchor="middle" font-size="12" fill="#0e7490">remindr.sqlite</text>
+    </g>
+    <g transform="translate(205,350)">
+      <rect width="140" height="100" rx="10" fill="#ffffff" stroke="#c9ced8" stroke-width="2"/>
+      <text x="70" y="38" text-anchor="middle" font-weight="700" fill="#1f2430">mg-calr</text>
+      <text x="70" y="64" text-anchor="middle" font-size="13" fill="#5b6475">calendar</text>
+      <text x="70" y="84" text-anchor="middle" font-size="12" fill="#0e7490">calr.sqlite</text>
+    </g>
+    <g transform="translate(360,350)">
+      <rect width="140" height="100" rx="10" fill="#ffffff" stroke="#c9ced8" stroke-width="2"/>
+      <text x="70" y="38" text-anchor="middle" font-weight="700" fill="#1f2430">mg-plan</text>
+      <text x="70" y="64" text-anchor="middle" font-size="13" fill="#5b6475">plans &amp; proof</text>
+      <text x="70" y="84" text-anchor="middle" font-size="12" fill="#0e7490">&lt;store&gt;.sqlite</text>
+    </g>
+    <g transform="translate(515,350)">
+      <rect width="140" height="100" rx="10" fill="#ffffff" stroke="#c9ced8" stroke-width="2"/>
+      <text x="70" y="38" text-anchor="middle" font-weight="700" fill="#1f2430">mg-brief</text>
+      <text x="70" y="64" text-anchor="middle" font-size="13" fill="#5b6475">sources &amp; CVEs</text>
+      <text x="70" y="84" text-anchor="middle" font-size="12" fill="#0e7490">catalog.sqlite</text>
+    </g>
+    <g transform="translate(670,350)">
+      <rect width="140" height="100" rx="10" fill="#ffffff" stroke="#c9ced8" stroke-width="2"/>
+      <text x="70" y="38" text-anchor="middle" font-weight="700" fill="#1f2430">mg-feedr</text>
+      <text x="70" y="64" text-anchor="middle" font-size="13" fill="#5b6475">live headlines</text>
+      <text x="70" y="84" text-anchor="middle" font-size="12" fill="#5b6475">uses brief's</text>
+    </g>
+    <g transform="translate(825,350)">
+      <rect width="125" height="100" rx="10" fill="#ffffff" stroke="#c9ced8" stroke-width="2"/>
+      <text x="62" y="38" text-anchor="middle" font-weight="700" fill="#1f2430">mg-streamr</text>
+      <text x="62" y="64" text-anchor="middle" font-size="13" fill="#5b6475">music, podcasts</text>
+      <text x="62" y="84" text-anchor="middle" font-size="12" fill="#0e7490">streamr.sqlite</text>
+    </g>
+
+    <!-- row 2 -->
+    <g transform="translate(127,475)">
+      <rect width="140" height="100" rx="10" fill="#ffffff" stroke="#c9ced8" stroke-width="2"/>
+      <text x="70" y="38" text-anchor="middle" font-weight="700" fill="#1f2430">mg-bookr</text>
+      <text x="70" y="64" text-anchor="middle" font-size="13" fill="#5b6475">books</text>
+      <text x="70" y="84" text-anchor="middle" font-size="12" fill="#0e7490">bookr.sqlite</text>
+    </g>
+    <g transform="translate(282,475)">
+      <rect width="140" height="100" rx="10" fill="#ffffff" stroke="#c9ced8" stroke-width="2"/>
+      <text x="70" y="38" text-anchor="middle" font-weight="700" fill="#1f2430">mg-vault</text>
+      <text x="70" y="64" text-anchor="middle" font-size="13" fill="#5b6475">notes</text>
+      <text x="70" y="84" text-anchor="middle" font-size="12" fill="#0e7490">Markdown files</text>
+    </g>
+    <g transform="translate(437,475)">
+      <rect width="140" height="100" rx="10" fill="#ffffff" stroke="#c9ced8" stroke-width="2"/>
+      <text x="70" y="38" text-anchor="middle" font-weight="700" fill="#1f2430">mg-contacts</text>
+      <text x="70" y="64" text-anchor="middle" font-size="13" fill="#5b6475">contacts</text>
+      <text x="70" y="84" text-anchor="middle" font-size="12" fill="#0e7490">encrypted file</text>
+    </g>
+    <g transform="translate(592,475)">
+      <rect width="140" height="100" rx="10" fill="#ffffff" stroke="#c9ced8" stroke-width="2"/>
+      <text x="70" y="38" text-anchor="middle" font-weight="700" fill="#1f2430">mg-taskr</text>
+      <text x="70" y="64" text-anchor="middle" font-size="13" fill="#5b6475">task manager</text>
+      <text x="70" y="84" text-anchor="middle" font-size="12" fill="#5b6475">keeps no data</text>
+    </g>
+    <g transform="translate(747,475)">
+      <rect width="140" height="100" rx="10" fill="#ffffff" stroke="#c9ced8" stroke-width="2"/>
+      <text x="70" y="38" text-anchor="middle" font-weight="700" fill="#1f2430">mg-calcr</text>
+      <text x="70" y="64" text-anchor="middle" font-size="13" fill="#5b6475">calculator</text>
+      <text x="70" y="84" text-anchor="middle" font-size="12" fill="#5b6475">keeps no data</text>
+    </g>
+  </g>
+</svg>

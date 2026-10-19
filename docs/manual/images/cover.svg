@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2400" viewBox="0 0 1600 2400" font-family="Noto Sans, DejaVu Sans, sans-serif">
+  <rect width="1600" height="2400" fill="#11151c"/>
+
+  <!-- a bar motif -->
+  <rect x="120" y="220" width="1360" height="88" rx="26" fill="#1b2029"/>
+  <rect x="148" y="244" width="52" height="40" rx="20" fill="#5fd3e6"/>
+  <g fill="#2c3340">
+    <rect x="214" y="244" width="140" height="40" rx="20"/>
+    <rect x="368" y="244" width="60" height="40" rx="20"/>
+    <rect x="442" y="244" width="84" height="40" rx="20"/>
+    <rect x="540" y="244" width="60" height="40" rx="20"/>
+    <rect x="1080" y="244" width="44" height="40" rx="20"/>
+    <rect x="1134" y="244" width="44" height="40" rx="20"/>
+    <rect x="1188" y="244" width="44" height="40" rx="20"/>
+    <rect x="1242" y="244" width="44" height="40" rx="20"/>
+    <rect x="1296" y="244" width="44" height="40" rx="20"/>
+    <rect x="1350" y="244" width="100" height="40" rx="20"/>
+  </g>
+  <rect x="690" y="244" width="220" height="40" rx="20" fill="#e8ecf2"/>
+
+  <!-- title -->
+  <text x="140" y="1000" font-size="210" font-weight="800" fill="#f2f4f8" letter-spacing="-4">GeistOS</text>
+  <rect x="146" y="1060" width="180" height="12" rx="6" fill="#5fd3e6"/>
+  <text x="140" y="1200" font-size="96" font-weight="600" fill="#cfd5df">Operations Manual</text>
+  <text x="140" y="1300" font-size="54" fill="#8b94a5">The Geist suite and desktop, made simple</text>
+
+  <!-- the apps, quietly -->
+  <g font-size="40" fill="#5b6475" font-family="JetBrainsMono Nerd Font, DejaVu Sans Mono, monospace">
+    <text x="140" y="1620">mg-remindr</text>
+    <text x="470" y="1620">mg-calr</text>
+    <text x="760" y="1620">mg-plan</text>
+    <text x="140" y="1690">mg-brief</text>
+    <text x="470" y="1690">mg-feedr</text>
+    <text x="760" y="1690">mg-streamr</text>
+    <text x="140" y="1760">mg-bookr</text>
+    <text x="470" y="1760">mg-vault</text>
+    <text x="760" y="1760">mg-contacts</text>
+    <text x="140" y="1830">mg-taskr</text>
+    <text x="470" y="1830">mg-calcr</text>
+  </g>
+
+  <text x="140" y="2240" font-size="44" fill="#8b94a5">October 2026</text>
+</svg>

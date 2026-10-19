@@ -3,6 +3,10 @@
 # pins and builds the suite.
 /mg-suite/
 
+# The operations manual's build output; docs/manual/build.sh regenerates both
+/docs/manual/*.epub
+/docs/manual/images/*.png
+
 # Editor and OS noise
 *.swp
 *~
