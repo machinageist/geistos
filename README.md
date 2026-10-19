@@ -25,6 +25,10 @@ full histories were merged here, so `git log -- mg-suite/<app>` shows every comm
 
 ## The desktop
 
+> **Snapshot.** `config/` is a copy of my desktop configuration as of 2026-09-22.
+> The live configuration is kept in my private dotfiles and has moved on since;
+> bringing the two back together is planned, not done.
+
 One Quickshell QML codebase replaces Waybar, wofi and mako: the bar, launcher,
 notifications, popups, and a 38-palette theme system shared with
 machinageist.dev. It runs as `qs -c mgeist`, started from Hyprland's Lua config.
