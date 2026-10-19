@@ -1,0 +1,2784 @@
+// Author: Jeff
+// Date: 2026-09-19
+// Description: Durable commitment and verification kernel for mg-plan
+// Notes: One SQLite file per named store, $MG_PLANR_DB or $XDG_DATA_HOME/mg-planr/<name>.sqlite,
+//        WAL, foreign keys on, append-only migrations. Scheduling still uses explicit calr
+//        request/receipt references; mg-plan never owns the calendar event
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
+use serde::{Deserialize, Serialize};
+
+mod secure_db;
+
+const MIN_NONEMPTY_TEXT: &str = "value must not be empty";
+
+macro_rules! define_id {
+    ($name:ident) => {
+        #[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+        pub struct $name(String);
+
+        impl $name {
+            // Construct a validated opaque identifier
+            pub fn new(value: impl Into<String>) -> Result<Self, PlanError> {
+                let value = value.into();
+                if value.trim().is_empty() {
+                    return Err(PlanError::EmptyIdentifier);
+                }
+                Ok(Self(value))
+            }
+
+            // Borrow the identifier without exposing its representation
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            // Render the opaque identifier
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(&self.0)
+            }
+        }
+    };
+}
+
+define_id!(PlanId);
+define_id!(WorkItemId);
+define_id!(CriterionId);
+define_id!(VerificationId);
+define_id!(EvidenceId);
+define_id!(ProjectId);
+define_id!(MilestoneId);
+define_id!(DecisionId);
+define_id!(ScheduleRequestId);
+define_id!(CalendarEventId);
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum WorkItemStatus {
+    Planned,
+    InProgress,
+    Blocked,
+    Completed,
+}
+
+impl fmt::Display for WorkItemStatus {
+    // Render a status for transition errors
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let status = match self {
+            Self::Planned => "planned",
+            Self::InProgress => "in-progress",
+            Self::Blocked => "blocked",
+            Self::Completed => "completed",
+        };
+        formatter.write_str(status)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum VerificationResult {
+    Pass,
+    Fail,
+    Inconclusive,
+    Waived,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EvidenceRef {
+    id: EvidenceId,
+    producer: String,
+    source_record: String,
+    revision: String,
+    digest: String,
+}
+
+impl EvidenceRef {
+    // Construct a reference to producer-owned evidence
+    pub fn new(
+        id: EvidenceId,
+        producer: impl Into<String>,
+        source_record: impl Into<String>,
+        revision: impl Into<String>,
+        digest: impl Into<String>,
+    ) -> Result<Self, PlanError> {
+        let producer = producer.into();
+        let source_record = source_record.into();
+        let revision = revision.into();
+        let digest = digest.into();
+        if producer.trim().is_empty()
+            || source_record.trim().is_empty()
+            || revision.trim().is_empty()
+            || digest.trim().is_empty()
+        {
+            return Err(PlanError::EmptyEvidenceReference);
+        }
+        Ok(Self {
+            id,
+            producer,
+            source_record,
+            revision,
+            digest,
+        })
+    }
+
+    // Return the stable evidence identifier
+    pub fn id(&self) -> &EvidenceId {
+        &self.id
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Verification {
+    pub id: VerificationId,
+    pub criterion_id: CriterionId,
+    pub subject_revision: u64,
+    pub evidence: Vec<EvidenceRef>,
+    pub result: VerificationResult,
+    pub verifier: String,
+    pub attempt: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct VerificationInput {
+    pub id: VerificationId,
+    pub criterion_id: CriterionId,
+    pub subject_revision: u64,
+    pub evidence: Vec<EvidenceRef>,
+    pub result: VerificationResult,
+    pub verifier: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AcceptanceCriterion {
+    pub id: CriterionId,
+    pub statement: String,
+    pub verifications: Vec<Verification>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct WorkItem {
+    pub id: WorkItemId,
+    pub title: String,
+    pub status: WorkItemStatus,
+    pub revision: u64,
+    pub criteria: Vec<AcceptanceCriterion>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct WorkItemSummary {
+    pub id: WorkItemId,
+    pub title: String,
+    pub status: WorkItemStatus,
+    pub revision: u64,
+    pub criteria_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum VerificationGapReason {
+    MissingVerification,
+    NonPassingVerification,
+    StaleVerification,
+    MissingEvidence,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct VerificationGap {
+    pub work_item_id: WorkItemId,
+    pub criterion_id: CriterionId,
+    pub reason: VerificationGapReason,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Project {
+    pub id: ProjectId,
+    pub title: String,
+    pub milestone_ids: Vec<MilestoneId>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Milestone {
+    pub id: MilestoneId,
+    pub project_id: ProjectId,
+    pub title: String,
+    pub work_item_ids: BTreeSet<WorkItemId>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Decision {
+    pub id: DecisionId,
+    pub question: String,
+    pub decision: String,
+    pub rationale: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MilestoneSummary {
+    pub id: MilestoneId,
+    pub project_id: ProjectId,
+    pub title: String,
+    pub total_work_items: usize,
+    pub completed_work_items: usize,
+    pub complete: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ScheduleRequest {
+    pub id: ScheduleRequestId,
+    pub work_item_id: WorkItemId,
+    pub work_item_revision: u64,
+    pub calendar: String,
+    pub requested_start: String,
+    pub duration_minutes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ScheduleReceipt {
+    pub request_id: ScheduleRequestId,
+    pub event_id: CalendarEventId,
+    pub calendar: String,
+    pub event_revision: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ScheduleGapReason {
+    MissingReceipt,
+    StaleWorkRevision,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ScheduleSummary {
+    pub request_id: ScheduleRequestId,
+    pub work_item_id: WorkItemId,
+    pub calendar: String,
+    pub requested_start: String,
+    pub duration_minutes: u64,
+    pub receipt: Option<ScheduleReceipt>,
+    pub gap: Option<ScheduleGapReason>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Plan {
+    id: PlanId,
+    title: String,
+    work_items: BTreeMap<WorkItemId, WorkItem>,
+    dependencies: BTreeSet<(WorkItemId, WorkItemId)>,
+    #[serde(default)]
+    projects: BTreeMap<ProjectId, Project>,
+    #[serde(default)]
+    milestones: BTreeMap<MilestoneId, Milestone>,
+    #[serde(default)]
+    decisions: BTreeMap<DecisionId, Decision>,
+    #[serde(default)]
+    schedule_requests: BTreeMap<ScheduleRequestId, ScheduleRequest>,
+    #[serde(default)]
+    schedule_receipts: BTreeMap<ScheduleRequestId, ScheduleReceipt>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PlanError {
+    EmptyIdentifier,
+    EmptyText(&'static str),
+    EmptyEvidenceReference,
+    DuplicateWorkItem(WorkItemId),
+    DuplicateVerification(VerificationId),
+    WorkItemNotFound(WorkItemId),
+    CriterionNotFound(CriterionId),
+    DuplicateCriterion(CriterionId),
+    DuplicateDependency,
+    SelfDependency,
+    DependencyCycle,
+    NoCriteria(WorkItemId),
+    DependencyIncomplete(WorkItemId),
+    CriterionIncomplete(CriterionId),
+    PassRequiresEvidence,
+    StaleVerification {
+        expected: u64,
+        actual: u64,
+    },
+    RevisionOverflow,
+    AttemptOverflow,
+    InvalidTransition {
+        from: WorkItemStatus,
+        to: WorkItemStatus,
+    },
+    EmptyVerifier,
+    DuplicateProject(ProjectId),
+    DuplicateMilestone(MilestoneId),
+    DuplicateDecision(DecisionId),
+    ProjectNotFound(ProjectId),
+    MilestoneNotFound(MilestoneId),
+    WorkItemAlreadyLinked(WorkItemId),
+    DuplicateScheduleRequest(ScheduleRequestId),
+    ScheduleRequestNotFound(ScheduleRequestId),
+    ScheduleReceiptAlreadyRecorded(ScheduleRequestId),
+    ScheduleCalendarMismatch,
+    InvalidScheduleDuration,
+}
+
+impl fmt::Display for PlanError {
+    // Explain a domain rejection without leaking implementation details
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyIdentifier => formatter.write_str("identifier must not be empty"),
+            Self::EmptyText(field) => write!(formatter, "{field}: {MIN_NONEMPTY_TEXT}"),
+            Self::EmptyEvidenceReference => formatter.write_str("evidence reference is incomplete"),
+            Self::DuplicateWorkItem(id) => write!(formatter, "work item already exists: {id}"),
+            Self::DuplicateVerification(id) => {
+                write!(formatter, "verification already exists: {id}")
+            }
+            Self::WorkItemNotFound(id) => write!(formatter, "work item not found: {id}"),
+            Self::CriterionNotFound(id) => write!(formatter, "criterion not found: {id}"),
+            Self::DuplicateCriterion(id) => write!(formatter, "criterion already exists: {id}"),
+            Self::DuplicateDependency => formatter.write_str("dependency already exists"),
+            Self::SelfDependency => formatter.write_str("work item cannot depend on itself"),
+            Self::DependencyCycle => formatter.write_str("dependency would create a cycle"),
+            Self::NoCriteria(id) => write!(formatter, "work item has no acceptance criteria: {id}"),
+            Self::DependencyIncomplete(id) => write!(formatter, "dependency is incomplete: {id}"),
+            Self::CriterionIncomplete(id) => write!(formatter, "criterion is not verified: {id}"),
+            Self::PassRequiresEvidence => {
+                formatter.write_str("a passing verification requires evidence")
+            }
+            Self::StaleVerification { expected, actual } => {
+                write!(
+                    formatter,
+                    "verification targets revision {actual}, expected {expected}"
+                )
+            }
+            Self::RevisionOverflow => formatter.write_str("work item revision overflow"),
+            Self::AttemptOverflow => formatter.write_str("verification attempt overflow"),
+            Self::InvalidTransition { from, to } => {
+                write!(formatter, "invalid work-item transition: {from} -> {to}")
+            }
+            Self::EmptyVerifier => formatter.write_str("verifier must not be empty"),
+            Self::DuplicateProject(id) => write!(formatter, "project already exists: {id}"),
+            Self::DuplicateMilestone(id) => write!(formatter, "milestone already exists: {id}"),
+            Self::DuplicateDecision(id) => write!(formatter, "decision already exists: {id}"),
+            Self::ProjectNotFound(id) => write!(formatter, "project not found: {id}"),
+            Self::MilestoneNotFound(id) => write!(formatter, "milestone not found: {id}"),
+            Self::WorkItemAlreadyLinked(id) => write!(formatter, "work item already linked: {id}"),
+            Self::DuplicateScheduleRequest(id) => {
+                write!(formatter, "schedule request already exists: {id}")
+            }
+            Self::ScheduleRequestNotFound(id) => {
+                write!(formatter, "schedule request not found: {id}")
+            }
+            Self::ScheduleReceiptAlreadyRecorded(id) => {
+                write!(formatter, "schedule receipt already recorded: {id}")
+            }
+            Self::ScheduleCalendarMismatch => {
+                formatter.write_str("schedule calendar does not match request")
+            }
+            Self::InvalidScheduleDuration => {
+                formatter.write_str("schedule duration must be positive")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PlanError {}
+
+impl Plan {
+    // Create an empty plan with no executable work yet
+    pub fn new(id: PlanId, title: impl Into<String>) -> Result<Self, PlanError> {
+        let title = title.into();
+        if title.trim().is_empty() {
+            return Err(PlanError::EmptyText("plan title"));
+        }
+        Ok(Self {
+            id,
+            title,
+            work_items: BTreeMap::new(),
+            dependencies: BTreeSet::new(),
+            projects: BTreeMap::new(),
+            milestones: BTreeMap::new(),
+            decisions: BTreeMap::new(),
+            schedule_requests: BTreeMap::new(),
+            schedule_receipts: BTreeMap::new(),
+        })
+    }
+
+    // Return the stable plan identifier
+    pub fn id(&self) -> &PlanId {
+        &self.id
+    }
+
+    // Return the validated plan title
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
+    // Return deterministic compact summaries for projection clients
+    pub fn work_item_summaries(&self) -> Vec<WorkItemSummary> {
+        self.work_items
+            .values()
+            .map(|item| WorkItemSummary {
+                id: item.id.clone(),
+                title: item.title.clone(),
+                status: item.status,
+                revision: item.revision,
+                criteria_count: item.criteria.len(),
+            })
+            .collect()
+    }
+
+    // Return only explicitly blocked work in stable identifier order
+    pub fn blocked_work_item_summaries(&self) -> Vec<WorkItemSummary> {
+        self.work_item_summaries()
+            .into_iter()
+            .filter(|item| item.status == WorkItemStatus::Blocked)
+            .collect()
+    }
+
+    // Explain every criterion that cannot currently prove completion
+    pub fn verification_gaps(&self) -> Vec<VerificationGap> {
+        self.work_items
+            .values()
+            .flat_map(|item| {
+                item.criteria.iter().filter_map(|criterion| {
+                    let reason = match criterion.verifications.last() {
+                        None => VerificationGapReason::MissingVerification,
+                        Some(verification) if verification.evidence.is_empty() => {
+                            VerificationGapReason::MissingEvidence
+                        }
+                        Some(verification) if verification.subject_revision != item.revision => {
+                            VerificationGapReason::StaleVerification
+                        }
+                        Some(verification) if verification.result != VerificationResult::Pass => {
+                            VerificationGapReason::NonPassingVerification
+                        }
+                        Some(_) => return None,
+                    };
+                    Some(VerificationGap {
+                        work_item_id: item.id.clone(),
+                        criterion_id: criterion.id.clone(),
+                        reason,
+                    })
+                })
+            })
+            .collect()
+    }
+
+    // Create a revision-pinned request for the calendar authority
+    pub fn request_schedule(
+        &mut self,
+        id: ScheduleRequestId,
+        work_item_id: &WorkItemId,
+        calendar: impl Into<String>,
+        requested_start: impl Into<String>,
+        duration_minutes: u64,
+    ) -> Result<(), PlanError> {
+        let work_item_revision = self.work_item(work_item_id)?.revision;
+        let calendar = calendar.into();
+        let requested_start = requested_start.into();
+        if calendar.trim().is_empty() {
+            return Err(PlanError::EmptyText("schedule calendar"));
+        }
+        if requested_start.trim().is_empty() {
+            return Err(PlanError::EmptyText("schedule start"));
+        }
+        if duration_minutes == 0 {
+            return Err(PlanError::InvalidScheduleDuration);
+        }
+        if self.schedule_requests.contains_key(&id) {
+            return Err(PlanError::DuplicateScheduleRequest(id));
+        }
+        self.schedule_requests.insert(
+            id.clone(),
+            ScheduleRequest {
+                id,
+                work_item_id: work_item_id.clone(),
+                work_item_revision,
+                calendar,
+                requested_start,
+                duration_minutes,
+            },
+        );
+        Ok(())
+    }
+
+    // Record calr's receipt without copying or owning the calendar event
+    pub fn record_schedule_receipt(
+        &mut self,
+        request_id: &ScheduleRequestId,
+        event_id: CalendarEventId,
+        calendar: impl Into<String>,
+        event_revision: impl Into<String>,
+    ) -> Result<(), PlanError> {
+        let request = self
+            .schedule_requests
+            .get(request_id)
+            .ok_or_else(|| PlanError::ScheduleRequestNotFound(request_id.clone()))?;
+        if self.schedule_receipts.contains_key(request_id) {
+            return Err(PlanError::ScheduleReceiptAlreadyRecorded(
+                request_id.clone(),
+            ));
+        }
+        let calendar = calendar.into();
+        let event_revision = event_revision.into();
+        if calendar != request.calendar {
+            return Err(PlanError::ScheduleCalendarMismatch);
+        }
+        if event_revision.trim().is_empty() {
+            return Err(PlanError::EmptyText("calendar event revision"));
+        }
+        self.schedule_receipts.insert(
+            request_id.clone(),
+            ScheduleReceipt {
+                request_id: request_id.clone(),
+                event_id,
+                calendar,
+                event_revision,
+            },
+        );
+        Ok(())
+    }
+
+    // Project scheduling intent and receipt state without becoming calr
+    pub fn schedule_summaries(&self) -> Vec<ScheduleSummary> {
+        self.schedule_requests
+            .values()
+            .map(|request| {
+                let receipt = self.schedule_receipts.get(&request.id).cloned();
+                let gap = if self
+                    .work_item(&request.work_item_id)
+                    .is_ok_and(|item| item.revision != request.work_item_revision)
+                {
+                    Some(ScheduleGapReason::StaleWorkRevision)
+                } else if receipt.is_none() {
+                    Some(ScheduleGapReason::MissingReceipt)
+                } else {
+                    None
+                };
+                ScheduleSummary {
+                    request_id: request.id.clone(),
+                    work_item_id: request.work_item_id.clone(),
+                    calendar: request.calendar.clone(),
+                    requested_start: request.requested_start.clone(),
+                    duration_minutes: request.duration_minutes,
+                    receipt,
+                    gap,
+                }
+            })
+            .collect()
+    }
+
+    // Create a project container without duplicating work-item authority
+    pub fn add_project(
+        &mut self,
+        id: ProjectId,
+        title: impl Into<String>,
+    ) -> Result<(), PlanError> {
+        let title = title.into();
+        if title.trim().is_empty() {
+            return Err(PlanError::EmptyText("project title"));
+        }
+        if self.projects.contains_key(&id) {
+            return Err(PlanError::DuplicateProject(id));
+        }
+        self.projects.insert(
+            id.clone(),
+            Project {
+                id,
+                title,
+                milestone_ids: Vec::new(),
+            },
+        );
+        Ok(())
+    }
+
+    // Create a milestone owned by an existing project
+    pub fn add_milestone(
+        &mut self,
+        project_id: &ProjectId,
+        id: MilestoneId,
+        title: impl Into<String>,
+    ) -> Result<(), PlanError> {
+        let title = title.into();
+        if title.trim().is_empty() {
+            return Err(PlanError::EmptyText("milestone title"));
+        }
+        if !self.projects.contains_key(project_id) {
+            return Err(PlanError::ProjectNotFound(project_id.clone()));
+        }
+        if self.milestones.contains_key(&id) {
+            return Err(PlanError::DuplicateMilestone(id));
+        }
+        self.milestones.insert(
+            id.clone(),
+            Milestone {
+                id: id.clone(),
+                project_id: project_id.clone(),
+                title,
+                work_item_ids: BTreeSet::new(),
+            },
+        );
+        self.projects
+            .get_mut(project_id)
+            .expect("project was validated above")
+            .milestone_ids
+            .push(id);
+        Ok(())
+    }
+
+    // Link existing work to a milestone while invalidating its proof revision
+    pub fn link_work_item_to_milestone(
+        &mut self,
+        milestone_id: &MilestoneId,
+        work_item_id: &WorkItemId,
+    ) -> Result<(), PlanError> {
+        self.work_item(work_item_id)?;
+        let milestone = self
+            .milestones
+            .get(milestone_id)
+            .ok_or_else(|| PlanError::MilestoneNotFound(milestone_id.clone()))?;
+        if milestone.work_item_ids.contains(work_item_id) {
+            return Err(PlanError::WorkItemAlreadyLinked(work_item_id.clone()));
+        }
+        let impacted = self.impacted_items(work_item_id);
+        self.ensure_revision_capacity(&impacted)?;
+        self.milestones
+            .get_mut(milestone_id)
+            .expect("milestone was validated above")
+            .work_item_ids
+            .insert(work_item_id.clone());
+        self.bump_revisions(&impacted)?;
+        Ok(())
+    }
+
+    // Record an immutable decision inside the plan aggregate
+    pub fn record_decision(
+        &mut self,
+        id: DecisionId,
+        question: impl Into<String>,
+        decision: impl Into<String>,
+        rationale: impl Into<String>,
+    ) -> Result<(), PlanError> {
+        let question = question.into();
+        let decision = decision.into();
+        let rationale = rationale.into();
+        if question.trim().is_empty() {
+            return Err(PlanError::EmptyText("decision question"));
+        }
+        if decision.trim().is_empty() {
+            return Err(PlanError::EmptyText("decision"));
+        }
+        if rationale.trim().is_empty() {
+            return Err(PlanError::EmptyText("decision rationale"));
+        }
+        if self.decisions.contains_key(&id) {
+            return Err(PlanError::DuplicateDecision(id));
+        }
+        self.decisions.insert(
+            id.clone(),
+            Decision {
+                id,
+                question,
+                decision,
+                rationale,
+            },
+        );
+        Ok(())
+    }
+
+    // Derive milestone progress from the authoritative work-item statuses
+    pub fn milestone_summaries(&self) -> Vec<MilestoneSummary> {
+        self.milestones
+            .values()
+            .map(|milestone| {
+                let total_work_items = milestone.work_item_ids.len();
+                let completed_work_items = milestone
+                    .work_item_ids
+                    .iter()
+                    .filter(|id| {
+                        self.work_item(id)
+                            .is_ok_and(|item| item.status == WorkItemStatus::Completed)
+                    })
+                    .count();
+                MilestoneSummary {
+                    id: milestone.id.clone(),
+                    project_id: milestone.project_id.clone(),
+                    title: milestone.title.clone(),
+                    total_work_items,
+                    completed_work_items,
+                    complete: total_work_items > 0 && completed_work_items == total_work_items,
+                }
+            })
+            .collect()
+    }
+
+    // Add a planned work item
+    pub fn add_work_item(
+        &mut self,
+        id: WorkItemId,
+        title: impl Into<String>,
+    ) -> Result<(), PlanError> {
+        let title = title.into();
+        if title.trim().is_empty() {
+            return Err(PlanError::EmptyText("work item title"));
+        }
+        if self.work_items.contains_key(&id) {
+            return Err(PlanError::DuplicateWorkItem(id));
+        }
+        self.work_items.insert(
+            id.clone(),
+            WorkItem {
+                id,
+                title,
+                status: WorkItemStatus::Planned,
+                revision: 1,
+                criteria: Vec::new(),
+            },
+        );
+        Ok(())
+    }
+
+    // Return a work item by stable identifier
+    pub fn work_item(&self, id: &WorkItemId) -> Result<&WorkItem, PlanError> {
+        self.work_items
+            .get(id)
+            .ok_or_else(|| PlanError::WorkItemNotFound(id.clone()))
+    }
+
+    // Start a work item after its identity has been established
+    pub fn start_work(&mut self, id: &WorkItemId) -> Result<(), PlanError> {
+        let work_item = self.work_item_mut(id)?;
+        match work_item.status {
+            WorkItemStatus::Planned | WorkItemStatus::InProgress => {
+                work_item.status = WorkItemStatus::InProgress;
+            }
+            status => {
+                return Err(PlanError::InvalidTransition {
+                    from: status,
+                    to: WorkItemStatus::InProgress,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    // Mark active work as blocked by an explicit obstacle
+    pub fn block_work(&mut self, id: &WorkItemId) -> Result<(), PlanError> {
+        let work_item = self.work_item_mut(id)?;
+        match work_item.status {
+            WorkItemStatus::Planned | WorkItemStatus::InProgress => {
+                work_item.status = WorkItemStatus::Blocked;
+                Ok(())
+            }
+            status => Err(PlanError::InvalidTransition {
+                from: status,
+                to: WorkItemStatus::Blocked,
+            }),
+        }
+    }
+
+    // Return blocked work to the planned state after its obstacle is resolved
+    pub fn unblock_work(&mut self, id: &WorkItemId) -> Result<(), PlanError> {
+        let work_item = self.work_item_mut(id)?;
+        if work_item.status != WorkItemStatus::Blocked {
+            return Err(PlanError::InvalidTransition {
+                from: work_item.status,
+                to: WorkItemStatus::Planned,
+            });
+        }
+        work_item.status = WorkItemStatus::Planned;
+        Ok(())
+    }
+
+    // Add a prerequisite edge while rejecting cycles
+    pub fn add_dependency(
+        &mut self,
+        work_item: &WorkItemId,
+        prerequisite: &WorkItemId,
+    ) -> Result<(), PlanError> {
+        self.work_item(work_item)?;
+        self.work_item(prerequisite)?;
+        if work_item == prerequisite {
+            return Err(PlanError::SelfDependency);
+        }
+        if self
+            .dependencies
+            .contains(&(work_item.clone(), prerequisite.clone()))
+        {
+            return Err(PlanError::DuplicateDependency);
+        }
+        if self.reachable(prerequisite, work_item) {
+            return Err(PlanError::DependencyCycle);
+        }
+        let impacted = self.impacted_items(work_item);
+        self.ensure_revision_capacity(&impacted)?;
+        self.dependencies
+            .insert((work_item.clone(), prerequisite.clone()));
+        self.bump_revisions(&impacted)?;
+        Ok(())
+    }
+
+    // Add an acceptance criterion to a work item
+    pub fn add_criterion(
+        &mut self,
+        work_item: &WorkItemId,
+        id: CriterionId,
+        statement: impl Into<String>,
+    ) -> Result<(), PlanError> {
+        let statement = statement.into();
+        if statement.trim().is_empty() {
+            return Err(PlanError::EmptyText("criterion statement"));
+        }
+        let impacted = self.impacted_items(work_item);
+        self.ensure_revision_capacity(&impacted)?;
+        let item = self.work_item_mut(work_item)?;
+        if item.criteria.iter().any(|criterion| criterion.id == id) {
+            return Err(PlanError::DuplicateCriterion(id));
+        }
+        item.criteria.push(AcceptanceCriterion {
+            id,
+            statement,
+            verifications: Vec::new(),
+        });
+        self.bump_revisions(&impacted)?;
+        Ok(())
+    }
+
+    // Record a revision-pinned verification attempt
+    pub fn record_verification(
+        &mut self,
+        work_item: &WorkItemId,
+        input: VerificationInput,
+    ) -> Result<(), PlanError> {
+        let VerificationInput {
+            id,
+            criterion_id,
+            subject_revision,
+            evidence,
+            result,
+            verifier,
+        } = input;
+        if verifier.trim().is_empty() {
+            return Err(PlanError::EmptyVerifier);
+        }
+        if result == VerificationResult::Pass && evidence.is_empty() {
+            return Err(PlanError::PassRequiresEvidence);
+        }
+        if self.work_items.values().any(|item| {
+            item.criteria.iter().any(|criterion| {
+                criterion
+                    .verifications
+                    .iter()
+                    .any(|verification| verification.id == id)
+            })
+        }) {
+            return Err(PlanError::DuplicateVerification(id));
+        }
+        let item = self.work_item(work_item)?.clone();
+        if item.revision != subject_revision {
+            return Err(PlanError::StaleVerification {
+                expected: item.revision,
+                actual: subject_revision,
+            });
+        }
+        let criterion_index = item
+            .criteria
+            .iter()
+            .position(|criterion| criterion.id == criterion_id)
+            .ok_or_else(|| PlanError::CriterionNotFound(criterion_id.clone()))?;
+        let completed_dependents = if item.status == WorkItemStatus::Completed {
+            self.impacted_items(work_item)
+                .into_iter()
+                .filter(|id| id != work_item)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        self.ensure_revision_capacity(&completed_dependents)?;
+        let work_item = self.work_item_mut(work_item)?;
+        let criterion = work_item
+            .criteria
+            .get_mut(criterion_index)
+            .ok_or_else(|| PlanError::CriterionNotFound(criterion_id.clone()))?;
+        let attempt = (criterion.verifications.len() as u64)
+            .checked_add(1)
+            .ok_or(PlanError::AttemptOverflow)?;
+        criterion.verifications.push(Verification {
+            id,
+            criterion_id: criterion_id.clone(),
+            subject_revision,
+            evidence,
+            result,
+            verifier,
+            attempt,
+        });
+        if work_item.status == WorkItemStatus::Completed {
+            work_item.status = WorkItemStatus::Planned;
+        }
+        self.bump_revisions(&completed_dependents)?;
+        Ok(())
+    }
+
+    // Complete a work item only when prerequisites and criteria are proven
+    pub fn complete(&mut self, id: &WorkItemId) -> Result<(), PlanError> {
+        let current_status = self.work_item(id)?.status;
+        if current_status == WorkItemStatus::Completed {
+            return Err(PlanError::InvalidTransition {
+                from: current_status,
+                to: WorkItemStatus::Completed,
+            });
+        }
+        if current_status == WorkItemStatus::Blocked {
+            return Err(PlanError::InvalidTransition {
+                from: current_status,
+                to: WorkItemStatus::Completed,
+            });
+        }
+        let prerequisites: Vec<WorkItemId> = self
+            .dependencies
+            .iter()
+            .filter(|(dependent, _)| dependent == id)
+            .map(|(_, prerequisite)| prerequisite.clone())
+            .collect();
+        for prerequisite in prerequisites {
+            if self.work_item(&prerequisite)?.status != WorkItemStatus::Completed {
+                return Err(PlanError::DependencyIncomplete(prerequisite));
+            }
+        }
+        let item = self.work_item(id)?;
+        if item.criteria.is_empty() {
+            return Err(PlanError::NoCriteria(id.clone()));
+        }
+        for criterion in &item.criteria {
+            let verified = criterion.verifications.last().is_some_and(|verification| {
+                verification.result == VerificationResult::Pass
+                    && verification.subject_revision == item.revision
+                    && !verification.evidence.is_empty()
+            });
+            if !verified {
+                return Err(PlanError::CriterionIncomplete(criterion.id.clone()));
+            }
+        }
+        self.work_item_mut(id)?.status = WorkItemStatus::Completed;
+        Ok(())
+    }
+
+    // Revise a work item and invalidate prior revision-pinned completion proof
+    pub fn revise_work_item(
+        &mut self,
+        id: &WorkItemId,
+        title: impl Into<String>,
+    ) -> Result<(), PlanError> {
+        let title = title.into();
+        if title.trim().is_empty() {
+            return Err(PlanError::EmptyText("work item title"));
+        }
+        let impacted = self.impacted_items(id);
+        self.ensure_revision_capacity(&impacted)?;
+        let previous_status = self.work_item(id)?.status;
+        self.bump_revisions(&impacted)?;
+        let item = self.work_item_mut(id)?;
+        item.title = title;
+        item.status = if previous_status == WorkItemStatus::Completed {
+            WorkItemStatus::Planned
+        } else {
+            previous_status
+        };
+        Ok(())
+    }
+
+    // Borrow the mutable work item after centralizing not-found behavior
+    fn work_item_mut(&mut self, id: &WorkItemId) -> Result<&mut WorkItem, PlanError> {
+        self.work_items
+            .get_mut(id)
+            .ok_or_else(|| PlanError::WorkItemNotFound(id.clone()))
+    }
+
+    // Collect a work item and every transitive dependent
+    fn impacted_items(&self, root: &WorkItemId) -> Vec<WorkItemId> {
+        let mut pending = vec![root.clone()];
+        let mut impacted = BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if !impacted.insert(current.clone()) {
+                continue;
+            }
+            pending.extend(
+                self.dependencies
+                    .iter()
+                    .filter(|(_, prerequisite)| prerequisite == &current)
+                    .map(|(dependent, _)| dependent.clone()),
+            );
+        }
+        impacted.into_iter().collect()
+    }
+
+    // Reject a revision cascade that cannot be represented safely
+    fn ensure_revision_capacity(&self, ids: &[WorkItemId]) -> Result<(), PlanError> {
+        for id in ids {
+            self.work_item(id)?
+                .revision
+                .checked_add(1)
+                .ok_or(PlanError::RevisionOverflow)?;
+        }
+        Ok(())
+    }
+
+    // Advance impacted revisions and invalidate completed proof
+    fn bump_revisions(&mut self, ids: &[WorkItemId]) -> Result<(), PlanError> {
+        for id in ids {
+            let item = self.work_item_mut(id)?;
+            item.revision = item
+                .revision
+                .checked_add(1)
+                .ok_or(PlanError::RevisionOverflow)?;
+            if item.status == WorkItemStatus::Completed {
+                item.status = WorkItemStatus::Planned;
+            }
+        }
+        Ok(())
+    }
+
+    // Test whether a dependency path already reaches the target
+    fn reachable(&self, start: &WorkItemId, target: &WorkItemId) -> bool {
+        let mut pending = vec![start.clone()];
+        let mut visited = BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if current == *target {
+                return true;
+            }
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            pending.extend(
+                self.dependencies
+                    .iter()
+                    .filter(|(dependent, _)| dependent == &current)
+                    .map(|(_, prerequisite)| prerequisite.clone()),
+            );
+        }
+        false
+    }
+}
+
+// ---- where a store lives ----
+// One file per named store under the XDG data folder; $MG_PLANR_DB may select only its leaf
+
+const STORE_PATH_ENV: &str = "MG_PLANR_DB";
+const STORE_DIRECTORY: &str = "mg-planr";
+const STORE_SUFFIX: &str = ".sqlite";
+const WAL_JOURNAL_MODE: &str = "wal";
+// long enough for another process to finish a write, short enough to fail visibly
+const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+// Resolve a store name to the one file that holds it
+pub fn store_path(name: &str) -> Result<PathBuf, StoreError> {
+    store_path_with_override(name, std::env::var_os(STORE_PATH_ENV))
+}
+
+// Resolve a store name against an explicit override, so a test never mutates the environment
+fn store_path_with_override(
+    name: &str,
+    override_path: Option<OsString>,
+) -> Result<PathBuf, StoreError> {
+    // An override may only name a file in this app's private directory. That keeps descriptor
+    // validation and SQLite's later pathname open inside one application-owned parent.
+    if let Some(path) = override_path {
+        if path.is_empty() {
+            return Err(StoreError::InvalidStoreName);
+        }
+        let directory = data_directory().join(STORE_DIRECTORY);
+        let path = PathBuf::from(path);
+        if path.is_absolute()
+            && path.file_name().is_some_and(|name| !name.is_empty())
+            && path.parent() == Some(directory.as_path())
+        {
+            return Ok(path);
+        }
+        return Err(StoreError::InvalidStoreName);
+    }
+    // a name is a plain file stem, never a path: it must not escape the data folder
+    if name.trim().is_empty() || name.starts_with('.') || name.contains(std::path::MAIN_SEPARATOR) {
+        return Err(StoreError::InvalidStoreName);
+    }
+    Ok(data_directory()
+        .join(STORE_DIRECTORY)
+        .join(format!("{name}{STORE_SUFFIX}")))
+}
+
+// Name the XDG data folder, falling back to the working directory on a machine without one
+fn data_directory() -> PathBuf {
+    dirs::data_dir().unwrap_or_else(|| PathBuf::from("."))
+}
+
+// ---- schema ----
+// Append-only: a migration that has shipped is never edited, the next one is added below
+
+const M1_PLAN_FOUNDATION: &str = "CREATE TABLE plans (
+         id TEXT PRIMARY KEY NOT NULL,
+         title TEXT NOT NULL,
+         document_json TEXT NOT NULL,
+         revision INTEGER NOT NULL DEFAULT 1
+     );
+     CREATE TABLE mutation_history (
+         plan_id TEXT NOT NULL REFERENCES plans(id),
+         revision INTEGER NOT NULL,
+         document_json TEXT NOT NULL,
+         PRIMARY KEY (plan_id, revision)
+     );";
+
+const MIGRATIONS: &[&str] = &[M1_PLAN_FOUNDATION];
+
+#[derive(Debug)]
+pub struct PlanStore {
+    connection: Connection,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoredPlan {
+    pub plan: Plan,
+    pub revision: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MutationRecord {
+    pub revision: u64,
+    pub document_json: String,
+}
+
+const PLAN_INTEROP_SCHEMA: &str = "mg.plan/1";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanEnvelope {
+    pub interop_schema: String,
+    pub kind: String,
+    pub producer: PlanProducer,
+    pub plan_revision: u64,
+    pub plan: Plan,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PlanProducer {
+    pub app: String,
+    pub app_version: String,
+}
+
+#[derive(Debug)]
+pub enum StoreError {
+    Sql(rusqlite::Error),
+    Json(serde_json::Error),
+    Io(std::io::Error),
+    InvalidImportEnvelope,
+    InvalidStoredPlan,
+    InvalidStoreName,
+    JournalMode(String),
+    LedgerAhead,
+    PlanNotFound(PlanId),
+    PlanAlreadyStored(PlanId),
+    RevisionConflict {
+        id: PlanId,
+        expected: u64,
+        actual: u64,
+    },
+    RevisionOverflow,
+}
+
+impl fmt::Display for StoreError {
+    // Explain storage failures without exposing database internals
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Sql(_) => formatter.write_str("plan storage operation failed"),
+            Self::Json(_) => formatter.write_str("plan document is invalid"),
+            Self::Io(_) => formatter.write_str("plan storage file is unavailable"),
+            Self::InvalidImportEnvelope => formatter.write_str("plan import envelope is invalid"),
+            Self::InvalidStoredPlan => formatter.write_str("stored plan identity is invalid"),
+            Self::InvalidStoreName => {
+                formatter.write_str("store name must be a plain name, or set MG_PLANR_DB to a file")
+            }
+            Self::JournalMode(mode) => {
+                write!(
+                    formatter,
+                    "store could not switch to WAL (journal mode {mode})"
+                )
+            }
+            Self::LedgerAhead => formatter.write_str("this store was written by a newer mg-plan"),
+            Self::PlanNotFound(id) => write!(formatter, "plan not found: {id}"),
+            Self::PlanAlreadyStored(id) => write!(formatter, "plan already stored: {id}"),
+            Self::RevisionConflict {
+                id,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "revision conflict for {id}: expected {expected}, actual {actual}"
+            ),
+            Self::RevisionOverflow => formatter.write_str("plan revision overflow"),
+        }
+    }
+}
+
+impl std::error::Error for StoreError {}
+
+impl From<rusqlite::Error> for StoreError {
+    // Convert database errors to the storage error boundary
+    fn from(error: rusqlite::Error) -> Self {
+        Self::Sql(error)
+    }
+}
+
+impl From<std::io::Error> for StoreError {
+    // Convert file-system errors to the storage error boundary
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+// SQLite reports a duplicate key as a constraint violation; the statements this
+// guards touch the plans primary key and nothing else
+fn is_unique_violation(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(failure, _)
+            if failure.code == rusqlite::ErrorCode::ConstraintViolation
+    )
+}
+
+// Revisions are u64 in the domain and a signed integer on the wire
+fn to_database_revision(revision: u64) -> Result<i64, StoreError> {
+    i64::try_from(revision).map_err(|_| StoreError::RevisionOverflow)
+}
+
+fn from_database_revision(revision: i64) -> Result<u64, StoreError> {
+    u64::try_from(revision).map_err(|_| StoreError::RevisionOverflow)
+}
+
+impl From<serde_json::Error> for StoreError {
+    // Convert serialization errors to the storage error boundary
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
+}
+
+impl PlanStore {
+    // Open (creating) one plan store file and bring its schema up to date
+    pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
+        let path = path.as_ref();
+        secure_db::prepare_database_path(path)?;
+        let connection = secure_db::open_database(path)?;
+        connection.busy_timeout(BUSY_TIMEOUT)?;
+        // the plan document and its history are one write, so the reference must hold
+        connection.execute_batch("PRAGMA foreign_keys = ON;")?;
+        // WAL lets one process read while another writes; the mode is stored in the file
+        let mode: String = connection.query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))?;
+        if !mode.eq_ignore_ascii_case(WAL_JOURNAL_MODE) {
+            return Err(StoreError::JournalMode(mode));
+        }
+        secure_db::ensure_database_sidecars(path)?;
+        let mut store = Self { connection };
+        store.migrate()?;
+        Ok(store)
+    }
+
+    // Open the store a name resolves to, creating its folder if this is the first run
+    pub fn open_named(name: &str) -> Result<Self, StoreError> {
+        Self::open(store_path(name)?)
+    }
+
+    // Apply every embedded migration the ledger has not recorded yet
+    fn migrate(&mut self) -> Result<(), StoreError> {
+        // Ledger discovery and the migrations themselves share one write transaction.
+        // Two first-time opens would otherwise both read an empty ledger and race.
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);",
+        )?;
+        let applied: i64 =
+            transaction.query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })?;
+        let applied = usize::try_from(applied).map_err(|_| StoreError::LedgerAhead)?;
+        // a ledger past the last migration this build carries means an older binary on newer data
+        if applied > MIGRATIONS.len() {
+            return Err(StoreError::LedgerAhead);
+        }
+        for (index, sql) in MIGRATIONS.iter().enumerate().skip(applied) {
+            transaction.execute_batch(sql)?;
+            let version = i64::try_from(index).map_err(|_| StoreError::RevisionOverflow)? + 1;
+            transaction.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?1)",
+                params![version],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(())
+    }
+
+    // Create a plan and its initial immutable history record
+    pub fn create(&mut self, plan: &Plan) -> Result<StoredPlan, StoreError> {
+        let document = serde_json::to_string(plan)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let inserted = transaction.execute(
+            "INSERT INTO plans (id, title, document_json, revision) VALUES (?1, ?2, ?3, 1)",
+            params![plan.id.as_str(), plan.title, document],
+        );
+        if let Err(error) = inserted {
+            if is_unique_violation(&error) {
+                return Err(StoreError::RevisionConflict {
+                    id: plan.id.clone(),
+                    expected: 0,
+                    actual: 1,
+                });
+            }
+            return Err(StoreError::Sql(error));
+        }
+        transaction.execute(
+            "INSERT INTO mutation_history (plan_id, revision, document_json) VALUES (?1, 1, ?2)",
+            params![plan.id.as_str(), document],
+        )?;
+        transaction.commit()?;
+        Ok(StoredPlan {
+            plan: plan.clone(),
+            revision: 1,
+        })
+    }
+
+    // Compatibility save that serializes against the current database revision
+    pub fn save(&mut self, plan: &Plan) -> Result<(), StoreError> {
+        match self.load_versioned(plan.id()) {
+            Ok(stored) => {
+                self.save_if_revision(plan, stored.revision)?;
+            }
+            Err(StoreError::PlanNotFound(_)) => {
+                self.create(plan)?;
+            }
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    }
+
+    // Replace a plan only if the caller still owns the observed revision
+    pub fn save_if_revision(
+        &mut self,
+        plan: &Plan,
+        expected_revision: u64,
+    ) -> Result<StoredPlan, StoreError> {
+        let document = serde_json::to_string(plan)?;
+        // IMMEDIATE takes the write lock before the revision is read, so a
+        // concurrent writer cannot slip between the revision check and the write
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let stored: i64 = transaction
+            .query_row(
+                "SELECT revision FROM plans WHERE id = ?1",
+                params![plan.id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::PlanNotFound(plan.id.clone()))?;
+        let actual = from_database_revision(stored)?;
+        if actual != expected_revision {
+            return Err(StoreError::RevisionConflict {
+                id: plan.id.clone(),
+                expected: expected_revision,
+                actual,
+            });
+        }
+        let revision = expected_revision
+            .checked_add(1)
+            .ok_or(StoreError::RevisionOverflow)?;
+        let database_revision = to_database_revision(revision)?;
+        let expected_database_revision = to_database_revision(expected_revision)?;
+        transaction.execute(
+            "UPDATE plans SET title = ?1, document_json = ?2, revision = ?3
+             WHERE id = ?4 AND revision = ?5",
+            params![
+                plan.title,
+                document,
+                database_revision,
+                plan.id.as_str(),
+                expected_database_revision,
+            ],
+        )?;
+        transaction.execute(
+            "INSERT INTO mutation_history (plan_id, revision, document_json) VALUES (?1, ?2, ?3)",
+            params![plan.id.as_str(), database_revision, document],
+        )?;
+        transaction.commit()?;
+        Ok(StoredPlan {
+            plan: plan.clone(),
+            revision,
+        })
+    }
+
+    // Load and validate one complete plan aggregate with its store revision
+    pub fn load_versioned(&mut self, id: &PlanId) -> Result<StoredPlan, StoreError> {
+        let (document, stored) = self
+            .connection
+            .query_row(
+                "SELECT document_json, revision FROM plans WHERE id = ?1",
+                params![id.as_str()],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::PlanNotFound(id.clone()))?;
+        let revision = from_database_revision(stored)?;
+        let plan: Plan = serde_json::from_str(&document)?;
+        if plan.id() != id {
+            return Err(StoreError::InvalidStoredPlan);
+        }
+        Ok(StoredPlan { plan, revision })
+    }
+
+    // Load one complete plan without exposing its persistence revision
+    pub fn load(&mut self, id: &PlanId) -> Result<Plan, StoreError> {
+        Ok(self.load_versioned(id)?.plan)
+    }
+
+    // Read the append-only aggregate history for audit and recovery
+    pub fn history(&mut self, id: &PlanId) -> Result<Vec<MutationRecord>, StoreError> {
+        let rows = {
+            let mut statement = self.connection.prepare(
+                "SELECT revision, document_json FROM mutation_history
+                 WHERE plan_id = ?1 ORDER BY revision",
+            )?;
+            let rows = statement.query_map(params![id.as_str()], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let records = rows
+            .into_iter()
+            .map(|(revision, document_json)| {
+                Ok(MutationRecord {
+                    revision: from_database_revision(revision)?,
+                    document_json,
+                })
+            })
+            .collect::<Result<Vec<_>, StoreError>>()?;
+        if records.is_empty() && self.load_versioned(id).is_err() {
+            return Err(StoreError::PlanNotFound(id.clone()));
+        }
+        Ok(records)
+    }
+
+    // Export one plan as a portable, versioned-domain envelope
+    pub fn export_json(&mut self, id: &PlanId) -> Result<String, StoreError> {
+        let stored = self.load_versioned(id)?;
+        let envelope = PlanEnvelope {
+            interop_schema: PLAN_INTEROP_SCHEMA.to_owned(),
+            kind: "plan".to_owned(),
+            producer: PlanProducer {
+                app: "mg-plan".to_owned(),
+                app_version: env!("CARGO_PKG_VERSION").to_owned(),
+            },
+            plan_revision: stored.revision,
+            plan: stored.plan,
+        };
+        Ok(serde_json::to_string_pretty(&envelope)?)
+    }
+
+    // Validate and atomically import one complete plan envelope
+    pub fn import_json(&mut self, document: &str) -> Result<PlanId, StoreError> {
+        let envelope: PlanEnvelope = serde_json::from_str(document)?;
+        if envelope.interop_schema != PLAN_INTEROP_SCHEMA
+            || envelope.kind != "plan"
+            || envelope.producer.app != "mg-plan"
+            || envelope.plan_revision == 0
+        {
+            return Err(StoreError::InvalidImportEnvelope);
+        }
+        let id = envelope.plan.id().clone();
+        match self.load_versioned(&id) {
+            Ok(_) => {
+                self.save_if_revision(&envelope.plan, envelope.plan_revision)?;
+            }
+            Err(StoreError::PlanNotFound(_)) if envelope.plan_revision == 1 => {
+                self.create(&envelope.plan)?;
+            }
+            Err(StoreError::PlanNotFound(_)) => return Err(StoreError::InvalidImportEnvelope),
+            Err(error) => return Err(error),
+        }
+        Ok(id)
+    }
+
+    // Adopt the rows a retired PostgreSQL database still holds, exactly as they stand
+    //
+    // The mg.plan/1 envelope cannot carry them: a plan at revision five is
+    // neither a new plan nor a revision-matched replacement, and it would lose
+    // its history. This is the one-shot path off the old engine, so it takes
+    // the two tables verbatim and refuses anything already stored.
+    pub fn adopt_postgres_rows(&mut self, document: &str) -> Result<Adoption, StoreError> {
+        let export: PostgresExport = serde_json::from_str(document)?;
+        // every row is checked before any is written, so a bad file leaves the store untouched
+        for row in &export.plans {
+            let id = PlanId::new(row.id.clone()).map_err(|_| StoreError::InvalidStoredPlan)?;
+            let plan: Plan = serde_json::from_str(&row.document_json)?;
+            if plan.id() != &id || row.revision == 0 {
+                return Err(StoreError::InvalidStoredPlan);
+            }
+        }
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for row in &export.plans {
+            let stored: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM plans WHERE id = ?1)",
+                params![row.id],
+                |found| found.get(0),
+            )?;
+            if stored {
+                let id = PlanId::new(row.id.clone()).map_err(|_| StoreError::InvalidStoredPlan)?;
+                return Err(StoreError::PlanAlreadyStored(id));
+            }
+            transaction.execute(
+                "INSERT INTO plans (id, title, document_json, revision) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    row.id,
+                    row.title,
+                    row.document_json,
+                    to_database_revision(row.revision)?
+                ],
+            )?;
+        }
+        // history follows the plans, because it references them
+        for row in &export.mutation_history {
+            transaction.execute(
+                "INSERT INTO mutation_history (plan_id, revision, document_json) VALUES (?1, ?2, ?3)",
+                params![
+                    row.plan_id,
+                    to_database_revision(row.revision)?,
+                    row.document_json
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(Adoption {
+            plans: export.plans.len(),
+            history: export.mutation_history.len(),
+        })
+    }
+}
+
+// ---- adoption of the retired PostgreSQL rows ----
+// The shape `psql` is asked to emit: the two tables, column for column
+
+/// One `plans` row as PostgreSQL held it
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresPlanRow {
+    pub id: String,
+    pub title: String,
+    pub document_json: String,
+    pub revision: u64,
+}
+
+/// One `mutation_history` row as PostgreSQL held it
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresHistoryRow {
+    pub plan_id: String,
+    pub revision: u64,
+    pub document_json: String,
+}
+
+/// Both tables of one retired database
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresExport {
+    pub plans: Vec<PostgresPlanRow>,
+    #[serde(default)]
+    pub mutation_history: Vec<PostgresHistoryRow>,
+}
+
+/// What one adoption carried across
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Adoption {
+    pub plans: usize,
+    pub history: usize,
+}
+
+#[cfg(test)]
+mod tests {
+
+    // A store file in a throwaway directory, so no test can see Jeff's real plans.
+    // The directory is returned because deleting it closes the store's file.
+    fn temp_store() -> (tempfile::TempDir, PlanStore) {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let store = PlanStore::open(directory.path().join("plans.sqlite")).expect("store opens");
+        (directory, store)
+    }
+
+    use super::*;
+
+    fn id<T: FromId>(value: &str) -> T {
+        T::from_id(value)
+    }
+
+    trait FromId {
+        fn from_id(value: &str) -> Self;
+    }
+
+    macro_rules! impl_from_id {
+        ($($type:ty),+ $(,)?) => {
+            $(impl FromId for $type {
+                fn from_id(value: &str) -> Self {
+                    <$type>::new(value).expect("test IDs are nonempty")
+                }
+            })+
+        };
+    }
+
+    impl_from_id!(
+        PlanId,
+        WorkItemId,
+        CriterionId,
+        VerificationId,
+        EvidenceId,
+        ProjectId,
+        MilestoneId,
+        DecisionId,
+        ScheduleRequestId,
+        CalendarEventId
+    );
+
+    fn evidence() -> EvidenceRef {
+        EvidenceRef::new(
+            id("evidence-1"),
+            "mg-lab",
+            "run-1",
+            "revision-1",
+            "sha256:abc",
+        )
+        .expect("evidence is complete")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn database_storage_is_private_repairs_modes_and_rejects_symlinks() {
+        use std::{
+            fs,
+            os::unix::fs::{symlink, PermissionsExt},
+        };
+
+        fn mode(path: &Path) -> u32 {
+            fs::metadata(path).unwrap().permissions().mode() & 0o777
+        }
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("new/plans.sqlite");
+        let store = PlanStore::open(&path).unwrap();
+        assert_eq!(mode(path.parent().unwrap()), 0o700);
+        assert_eq!(mode(&path), 0o600);
+
+        store
+            .connection
+            .execute_batch("CREATE TABLE f03_probe (value INTEGER)")
+            .unwrap();
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = path.clone().into_os_string();
+            sidecar.push(suffix);
+            let sidecar = PathBuf::from(sidecar);
+            assert!(sidecar.is_file(), "SQLite creates {suffix}");
+            assert_eq!(mode(&sidecar), 0o600, "{suffix} is owner-only");
+        }
+
+        let repaired_directory = root.path().join("repaired");
+        fs::create_dir(&repaired_directory).unwrap();
+        fs::set_permissions(&repaired_directory, fs::Permissions::from_mode(0o755)).unwrap();
+        let repaired_path = repaired_directory.join("plans.sqlite");
+        fs::File::create(&repaired_path).unwrap();
+        fs::set_permissions(&repaired_path, fs::Permissions::from_mode(0o644)).unwrap();
+        PlanStore::open(&repaired_path).unwrap();
+        assert_eq!(mode(&repaired_directory), 0o700);
+        assert_eq!(mode(&repaired_path), 0o600);
+
+        let target = root.path().join("target.sqlite");
+        let link = root.path().join("link.sqlite");
+        symlink(&target, &link).unwrap();
+        assert!(PlanStore::open(&link).is_err());
+        assert!(
+            !target.exists(),
+            "SQLite never follows the protected database leaf"
+        );
+    }
+
+    #[test]
+    fn completion_requires_revision_pinned_passing_evidence() {
+        let mut plan = Plan::new(id("plan-1"), "Ship a verified slice").expect("plan is valid");
+        let work: WorkItemId = id("work-1");
+        plan.add_work_item(work.clone(), "Implement the slice")
+            .expect("work is valid");
+        let criterion: CriterionId = id("criterion-1");
+        plan.add_criterion(&work, criterion.clone(), "The behavior is demonstrated")
+            .expect("criterion is valid");
+
+        assert_eq!(
+            plan.complete(&work),
+            Err(PlanError::CriterionIncomplete(criterion.clone()))
+        );
+        plan.record_verification(
+            &work,
+            VerificationInput {
+                id: id("verification-1"),
+                criterion_id: criterion.clone(),
+                subject_revision: 2,
+                evidence: vec![evidence()],
+                result: VerificationResult::Pass,
+                verifier: "human:jeff".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        plan.complete(&work).expect("verified work completes");
+        assert_eq!(
+            plan.work_item(&work).expect("work exists").status,
+            WorkItemStatus::Completed
+        );
+    }
+
+    #[test]
+    fn dependencies_reject_cycles_and_incomplete_prerequisites() {
+        let mut plan = Plan::new(id("plan-1"), "Dependency test").expect("plan is valid");
+        let first: WorkItemId = id("work-1");
+        let second: WorkItemId = id("work-2");
+        plan.add_work_item(first.clone(), "First")
+            .expect("work is valid");
+        plan.add_work_item(second.clone(), "Second")
+            .expect("work is valid");
+        plan.add_dependency(&second, &first).expect("edge is valid");
+        assert_eq!(
+            plan.add_dependency(&first, &second),
+            Err(PlanError::DependencyCycle)
+        );
+        assert_eq!(
+            plan.complete(&second),
+            Err(PlanError::DependencyIncomplete(first))
+        );
+    }
+
+    #[test]
+    fn revising_work_invalidates_previous_verification_revision() {
+        let mut plan = Plan::new(id("plan-1"), "Revision test").expect("plan is valid");
+        let work: WorkItemId = id("work-1");
+        let criterion: CriterionId = id("criterion-1");
+        plan.add_work_item(work.clone(), "Original")
+            .expect("work is valid");
+        plan.add_criterion(&work, criterion.clone(), "The behavior is demonstrated")
+            .expect("criterion is valid");
+        plan.record_verification(
+            &work,
+            VerificationInput {
+                id: id("verification-1"),
+                criterion_id: criterion.clone(),
+                subject_revision: 2,
+                evidence: vec![evidence()],
+                result: VerificationResult::Pass,
+                verifier: "ci:test".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        plan.complete(&work).expect("original work completes");
+        plan.revise_work_item(&work, "Revised")
+            .expect("revision is valid");
+        assert_eq!(plan.work_item(&work).expect("work exists").revision, 3);
+        assert_eq!(
+            plan.complete(&work),
+            Err(PlanError::CriterionIncomplete(criterion))
+        );
+    }
+
+    #[test]
+    fn verification_ids_are_unique_within_a_plan() {
+        let mut plan = Plan::new(id("plan-1"), "Identity test").expect("plan is valid");
+        let work: WorkItemId = id("work-1");
+        let criterion: CriterionId = id("criterion-1");
+        let verification: VerificationId = id("verification-1");
+        plan.add_work_item(work.clone(), "Work")
+            .expect("work is valid");
+        plan.add_criterion(&work, criterion.clone(), "The behavior is demonstrated")
+            .expect("criterion is valid");
+        let input = || VerificationInput {
+            id: verification.clone(),
+            criterion_id: criterion.clone(),
+            subject_revision: 2,
+            evidence: vec![evidence()],
+            result: VerificationResult::Pass,
+            verifier: "human:jeff".to_owned(),
+        };
+        plan.record_verification(&work, input())
+            .expect("first verification is valid");
+        assert_eq!(
+            plan.record_verification(&work, input()),
+            Err(PlanError::DuplicateVerification(verification))
+        );
+    }
+
+    #[test]
+    fn structural_changes_invalidate_completed_work() {
+        let mut plan = Plan::new(id("plan-1"), "Structural mutation test").expect("plan is valid");
+        let work: WorkItemId = id("work-1");
+        let criterion: CriterionId = id("criterion-1");
+        plan.add_work_item(work.clone(), "Work")
+            .expect("work is valid");
+        plan.add_criterion(&work, criterion.clone(), "The behavior is demonstrated")
+            .expect("criterion is valid");
+        plan.record_verification(
+            &work,
+            VerificationInput {
+                id: id("verification-1"),
+                criterion_id: criterion,
+                subject_revision: 2,
+                evidence: vec![evidence()],
+                result: VerificationResult::Pass,
+                verifier: "human:jeff".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        plan.complete(&work).expect("work is complete");
+        plan.add_criterion(&work, id("criterion-2"), "A new condition is demonstrated")
+            .expect("new criterion is valid");
+        assert_eq!(plan.work_item(&work).expect("work exists").revision, 3);
+        assert_eq!(
+            plan.work_item(&work).expect("work exists").status,
+            WorkItemStatus::Planned
+        );
+        assert_eq!(
+            plan.complete(&work),
+            Err(PlanError::CriterionIncomplete(id("criterion-1")))
+        );
+    }
+
+    #[test]
+    fn prerequisite_changes_invalidate_completed_dependents() {
+        let mut plan =
+            Plan::new(id("plan-1"), "Dependency invalidation test").expect("plan is valid");
+        let prerequisite: WorkItemId = id("work-1");
+        let dependent: WorkItemId = id("work-2");
+        let criterion: CriterionId = id("criterion-1");
+        plan.add_work_item(prerequisite.clone(), "Prerequisite")
+            .expect("work is valid");
+        plan.add_work_item(dependent.clone(), "Dependent")
+            .expect("work is valid");
+        plan.add_dependency(&dependent, &prerequisite)
+            .expect("dependency is valid");
+        plan.add_criterion(&prerequisite, id("criterion-1"), "Prerequisite is proven")
+            .expect("criterion is valid");
+        plan.record_verification(
+            &prerequisite,
+            VerificationInput {
+                id: id("verification-1"),
+                criterion_id: id("criterion-1"),
+                subject_revision: 2,
+                evidence: vec![evidence()],
+                result: VerificationResult::Pass,
+                verifier: "human:jeff".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        plan.complete(&prerequisite)
+            .expect("prerequisite is complete");
+        plan.add_criterion(&dependent, criterion.clone(), "Dependent is proven")
+            .expect("criterion is valid");
+        plan.record_verification(
+            &dependent,
+            VerificationInput {
+                id: id("verification-2"),
+                criterion_id: criterion,
+                subject_revision: 4,
+                evidence: vec![evidence()],
+                result: VerificationResult::Pass,
+                verifier: "human:jeff".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        plan.complete(&dependent).expect("dependent is complete");
+        plan.revise_work_item(&prerequisite, "Revised prerequisite")
+            .expect("revision is valid");
+        assert_eq!(
+            plan.work_item(&dependent).expect("dependent exists").status,
+            WorkItemStatus::Planned
+        );
+        assert_eq!(
+            plan.complete(&dependent),
+            Err(PlanError::DependencyIncomplete(prerequisite))
+        );
+    }
+
+    #[test]
+    fn revising_blocked_work_preserves_blocked_state() {
+        let mut plan = Plan::new(id("plan-1"), "Blocked revision test").expect("plan is valid");
+        let work: WorkItemId = id("work-1");
+        plan.add_work_item(work.clone(), "Work")
+            .expect("work is valid");
+        plan.block_work(&work).expect("work blocks");
+        plan.revise_work_item(&work, "Revised work")
+            .expect("revision is valid");
+        assert_eq!(
+            plan.work_item(&work).expect("work exists").status,
+            WorkItemStatus::Blocked
+        );
+    }
+
+    #[test]
+    fn blocked_work_cannot_complete_until_unblocked() {
+        let mut plan = Plan::new(id("plan-1"), "Transition test").expect("plan is valid");
+        let work: WorkItemId = id("work-1");
+        plan.add_work_item(work.clone(), "Work")
+            .expect("work is valid");
+        plan.start_work(&work).expect("work starts");
+        plan.block_work(&work).expect("work blocks");
+        assert_eq!(
+            plan.complete(&work),
+            Err(PlanError::InvalidTransition {
+                from: WorkItemStatus::Blocked,
+                to: WorkItemStatus::Completed,
+            })
+        );
+        plan.unblock_work(&work).expect("work unblocks");
+        assert_eq!(plan.start_work(&work), Ok(()));
+    }
+
+    #[test]
+    fn reopening_completed_prerequisite_reopens_completed_dependents() {
+        let mut plan =
+            Plan::new(id("plan-1"), "Verification dependency test").expect("plan is valid");
+        let prerequisite: WorkItemId = id("work-1");
+        let dependent: WorkItemId = id("work-2");
+        let prerequisite_criterion: CriterionId = id("criterion-1");
+        let dependent_criterion: CriterionId = id("criterion-2");
+        plan.add_work_item(prerequisite.clone(), "Prerequisite")
+            .expect("work is valid");
+        plan.add_work_item(dependent.clone(), "Dependent")
+            .expect("work is valid");
+        plan.add_dependency(&dependent, &prerequisite)
+            .expect("dependency is valid");
+        plan.add_criterion(
+            &prerequisite,
+            prerequisite_criterion.clone(),
+            "Prerequisite is proven",
+        )
+        .expect("criterion is valid");
+        plan.record_verification(
+            &prerequisite,
+            VerificationInput {
+                id: id("verification-1"),
+                criterion_id: prerequisite_criterion,
+                subject_revision: 2,
+                evidence: vec![evidence()],
+                result: VerificationResult::Pass,
+                verifier: "human:jeff".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        plan.complete(&prerequisite)
+            .expect("prerequisite is complete");
+        plan.add_criterion(
+            &dependent,
+            dependent_criterion.clone(),
+            "Dependent is proven",
+        )
+        .expect("criterion is valid");
+        plan.record_verification(
+            &dependent,
+            VerificationInput {
+                id: id("verification-2"),
+                criterion_id: dependent_criterion.clone(),
+                subject_revision: 4,
+                evidence: vec![evidence()],
+                result: VerificationResult::Pass,
+                verifier: "human:jeff".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        plan.complete(&dependent).expect("dependent is complete");
+        plan.record_verification(
+            &prerequisite,
+            VerificationInput {
+                id: id("verification-3"),
+                criterion_id: id("criterion-1"),
+                subject_revision: 2,
+                evidence: vec![evidence()],
+                result: VerificationResult::Fail,
+                verifier: "ci:test".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        assert_eq!(
+            plan.work_item(&prerequisite)
+                .expect("prerequisite exists")
+                .status,
+            WorkItemStatus::Planned
+        );
+        assert_eq!(
+            plan.work_item(&dependent).expect("dependent exists").status,
+            WorkItemStatus::Planned
+        );
+        assert_eq!(
+            plan.work_item(&dependent)
+                .expect("dependent exists")
+                .revision,
+            5
+        );
+    }
+
+    #[test]
+    fn new_nonpassing_verification_reopens_completed_work() {
+        let mut plan = Plan::new(id("plan-1"), "Verification status test").expect("plan is valid");
+        let work: WorkItemId = id("work-1");
+        let criterion: CriterionId = id("criterion-1");
+        plan.add_work_item(work.clone(), "Work")
+            .expect("work is valid");
+        plan.add_criterion(&work, criterion.clone(), "The behavior is demonstrated")
+            .expect("criterion is valid");
+        plan.record_verification(
+            &work,
+            VerificationInput {
+                id: id("verification-1"),
+                criterion_id: criterion.clone(),
+                subject_revision: 2,
+                evidence: vec![evidence()],
+                result: VerificationResult::Pass,
+                verifier: "human:jeff".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        plan.complete(&work).expect("work is complete");
+        plan.record_verification(
+            &work,
+            VerificationInput {
+                id: id("verification-2"),
+                criterion_id: criterion.clone(),
+                subject_revision: 2,
+                evidence: vec![evidence()],
+                result: VerificationResult::Fail,
+                verifier: "ci:test".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        assert_eq!(
+            plan.work_item(&work).expect("work exists").status,
+            WorkItemStatus::Planned
+        );
+        assert_eq!(
+            plan.complete(&work),
+            Err(PlanError::CriterionIncomplete(criterion))
+        );
+    }
+
+    #[test]
+    fn query_projections_are_deterministic_and_explain_gaps() {
+        let mut plan = Plan::new(id("plan-queries"), "Query plan").expect("plan is valid");
+        let blocked: WorkItemId = id("blocked");
+        let missing: WorkItemId = id("missing");
+        let failing: WorkItemId = id("failing");
+        let stale: WorkItemId = id("stale");
+        for (work, title) in [
+            (blocked.clone(), "Blocked"),
+            (missing.clone(), "Missing"),
+            (failing.clone(), "Failing"),
+            (stale.clone(), "Stale"),
+        ] {
+            plan.add_work_item(work, title).expect("work is valid");
+        }
+        plan.block_work(&blocked).expect("work blocks");
+        plan.add_criterion(&missing, id("missing-criterion"), "Missing proof")
+            .expect("criterion is valid");
+        let failing_criterion: CriterionId = id("failing-criterion");
+        plan.add_criterion(&failing, failing_criterion.clone(), "Failing proof")
+            .expect("criterion is valid");
+        plan.record_verification(
+            &failing,
+            VerificationInput {
+                id: id("failing-verification"),
+                criterion_id: failing_criterion,
+                subject_revision: 2,
+                evidence: vec![evidence()],
+                result: VerificationResult::Fail,
+                verifier: "test".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        let stale_criterion: CriterionId = id("stale-criterion");
+        plan.add_criterion(&stale, stale_criterion.clone(), "Stale proof")
+            .expect("criterion is valid");
+        plan.record_verification(
+            &stale,
+            VerificationInput {
+                id: id("stale-verification"),
+                criterion_id: stale_criterion.clone(),
+                subject_revision: 2,
+                evidence: vec![evidence()],
+                result: VerificationResult::Pass,
+                verifier: "test".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        plan.revise_work_item(&stale, "Revised stale work")
+            .expect("revision is valid");
+
+        let summaries = plan.work_item_summaries();
+        assert_eq!(
+            summaries
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["blocked", "failing", "missing", "stale"]
+        );
+        assert_eq!(
+            plan.blocked_work_item_summaries()
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["blocked"]
+        );
+        assert_eq!(
+            plan.verification_gaps(),
+            vec![
+                VerificationGap {
+                    work_item_id: id("failing"),
+                    criterion_id: id("failing-criterion"),
+                    reason: VerificationGapReason::NonPassingVerification,
+                },
+                VerificationGap {
+                    work_item_id: id("missing"),
+                    criterion_id: id("missing-criterion"),
+                    reason: VerificationGapReason::MissingVerification,
+                },
+                VerificationGap {
+                    work_item_id: id("stale"),
+                    criterion_id: id("stale-criterion"),
+                    reason: VerificationGapReason::StaleVerification,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn project_milestone_decision_slice_is_derived_and_persistent() {
+        let mut plan = Plan::new(id("plan-structure"), "Structured plan").expect("plan is valid");
+        let work: WorkItemId = id("work-structure");
+        plan.add_work_item(work.clone(), "Complete structured work")
+            .expect("work is valid");
+        let criterion: CriterionId = id("criterion-structure");
+        plan.add_criterion(&work, criterion.clone(), "Work is proven")
+            .expect("criterion is valid");
+        let project: ProjectId = id("project-1");
+        let milestone: MilestoneId = id("milestone-1");
+        plan.add_project(project.clone(), "Suite foundation")
+            .expect("project is valid");
+        plan.add_milestone(&project, milestone.clone(), "Verified foundation")
+            .expect("milestone is valid");
+        plan.link_work_item_to_milestone(&milestone, &work)
+            .expect("work links");
+        plan.record_decision(
+            id("decision-1"),
+            "Where does milestone completion come from?",
+            "From work-item status",
+            "Work items remain the single completion authority",
+        )
+        .expect("decision is valid");
+
+        let incomplete = plan.milestone_summaries();
+        assert_eq!(incomplete[0].total_work_items, 1);
+        assert_eq!(incomplete[0].completed_work_items, 0);
+        assert!(!incomplete[0].complete);
+        let revision = plan.work_item(&work).expect("work exists").revision;
+        plan.record_verification(
+            &work,
+            VerificationInput {
+                id: id("verification-structure"),
+                criterion_id: criterion,
+                subject_revision: revision,
+                evidence: vec![evidence()],
+                result: VerificationResult::Pass,
+                verifier: "test".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        plan.complete(&work).expect("work completes");
+        let complete = plan.milestone_summaries();
+        assert!(complete[0].complete);
+        assert_eq!(complete[0].completed_work_items, 1);
+
+        let (_directory, mut store) = temp_store();
+        store.save(&plan).expect("structured plan saves");
+        let restored = store.load(plan.id()).expect("structured plan loads");
+        assert_eq!(restored, plan);
+        assert!(restored.milestone_summaries()[0].complete);
+    }
+
+    #[test]
+    fn scheduling_request_receipt_and_staleness_are_persistent() {
+        let mut plan = Plan::new(id("plan-schedule"), "Scheduling plan").expect("plan is valid");
+        let work: WorkItemId = id("work-schedule");
+        plan.add_work_item(work.clone(), "Schedule this work")
+            .expect("work is valid");
+        let request: ScheduleRequestId = id("request-1");
+        plan.request_schedule(
+            request.clone(),
+            &work,
+            "calr:primary",
+            "2026-09-01T09:00:00Z",
+            60,
+        )
+        .expect("request is valid");
+        assert_eq!(
+            plan.schedule_summaries()[0].gap,
+            Some(ScheduleGapReason::MissingReceipt)
+        );
+        plan.record_schedule_receipt(&request, id("event-1"), "calr:primary", "event-revision-1")
+            .expect("receipt is valid");
+        assert_eq!(plan.schedule_summaries()[0].gap, None);
+        assert_eq!(
+            plan.schedule_summaries()[0]
+                .receipt
+                .as_ref()
+                .expect("receipt exists")
+                .event_id,
+            id("event-1")
+        );
+        assert_eq!(
+            plan.record_schedule_receipt(
+                &request,
+                id("event-2"),
+                "calr:primary",
+                "event-revision-2"
+            ),
+            Err(PlanError::ScheduleReceiptAlreadyRecorded(request.clone()))
+        );
+        let bad_request: ScheduleRequestId = id("request-bad");
+        plan.request_schedule(bad_request, &work, "calr:primary", "later", 30)
+            .expect("second request is valid");
+        assert_eq!(
+            plan.record_schedule_receipt(
+                &id("request-bad"),
+                id("event-bad"),
+                "calr:secondary",
+                "r1"
+            ),
+            Err(PlanError::ScheduleCalendarMismatch)
+        );
+        plan.revise_work_item(&work, "Revised scheduled work")
+            .expect("revision is valid");
+        assert_eq!(
+            plan.schedule_summaries()[0].gap,
+            Some(ScheduleGapReason::StaleWorkRevision)
+        );
+
+        let (_directory, mut store) = temp_store();
+        store.save(&plan).expect("scheduled plan saves");
+        let restored = store.load(plan.id()).expect("scheduled plan loads");
+        assert_eq!(restored.schedule_summaries(), plan.schedule_summaries());
+    }
+
+    #[test]
+    fn stale_writer_is_rejected_and_history_is_append_only() {
+        let plan = Plan::new(id("plan-conflict"), "Conflict plan").expect("plan is valid");
+        // Two stores opened on one file are two writers contending for the same rows
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("plans.sqlite");
+        let mut initial = PlanStore::open(&path).expect("store opens");
+        initial.create(&plan).expect("plan creates");
+
+        let mut first = PlanStore::open(&path).expect("first writer opens");
+        let mut second = PlanStore::open(&path).expect("second writer opens");
+        let first_loaded = first.load_versioned(plan.id()).expect("first reads");
+        let second_loaded = second.load_versioned(plan.id()).expect("second reads");
+        assert_eq!(first_loaded.revision, 1);
+        assert_eq!(second_loaded.revision, 1);
+
+        let mut first_plan = first_loaded.plan;
+        first_plan
+            .revise_work_item(&id("missing-work"), "irrelevant")
+            .expect_err("missing work is rejected");
+        let first_saved = Plan::new(id("plan-conflict"), "First writer").expect("plan is valid");
+        let saved = first
+            .save_if_revision(&first_saved, first_loaded.revision)
+            .expect("first writer saves");
+        assert_eq!(saved.revision, 2);
+
+        let second_plan = Plan::new(id("plan-conflict"), "Stale writer").expect("plan is valid");
+        assert!(matches!(
+            second.save_if_revision(&second_plan, second_loaded.revision),
+            Err(StoreError::RevisionConflict {
+                id,
+                expected: 1,
+                actual: 2,
+            }) if id == PlanId::new("plan-conflict").expect("plan id is valid")
+        ));
+        let history = first.history(plan.id()).expect("history reads");
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].revision, 1);
+        assert_eq!(history[1].revision, 2);
+        assert_eq!(
+            first.load(plan.id()).expect("current plan loads").title(),
+            "First writer"
+        );
+        drop(first);
+        drop(second);
+        // the temporary directory takes the file with it here
+    }
+
+    #[test]
+    fn persisted_lifecycle_reopens_downstream_work_after_revision() {
+        let mut plan = Plan::new(id("plan-lifecycle"), "Lifecycle plan").expect("plan is valid");
+        let prerequisite: WorkItemId = id("work-prerequisite");
+        let dependent: WorkItemId = id("work-dependent");
+        let prerequisite_criterion: CriterionId = id("criterion-prerequisite");
+        let dependent_criterion: CriterionId = id("criterion-dependent");
+        plan.add_work_item(prerequisite.clone(), "Establish prerequisite")
+            .expect("work is valid");
+        plan.add_work_item(dependent.clone(), "Complete dependent")
+            .expect("work is valid");
+        plan.add_dependency(&dependent, &prerequisite)
+            .expect("dependency is valid");
+        plan.add_criterion(
+            &prerequisite,
+            prerequisite_criterion.clone(),
+            "Prerequisite is proven",
+        )
+        .expect("criterion is valid");
+        plan.add_criterion(
+            &dependent,
+            dependent_criterion.clone(),
+            "Dependent is proven",
+        )
+        .expect("criterion is valid");
+        let prerequisite_revision = plan
+            .work_item(&prerequisite)
+            .expect("prerequisite exists")
+            .revision;
+        let dependent_revision = plan
+            .work_item(&dependent)
+            .expect("dependent exists")
+            .revision;
+        plan.record_verification(
+            &prerequisite,
+            VerificationInput {
+                id: id("verification-prerequisite"),
+                criterion_id: prerequisite_criterion,
+                subject_revision: prerequisite_revision,
+                evidence: vec![evidence()],
+                result: VerificationResult::Pass,
+                verifier: "test".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        plan.complete(&prerequisite)
+            .expect("prerequisite completes");
+        plan.record_verification(
+            &dependent,
+            VerificationInput {
+                id: id("verification-dependent"),
+                criterion_id: dependent_criterion,
+                subject_revision: dependent_revision,
+                evidence: vec![evidence()],
+                result: VerificationResult::Pass,
+                verifier: "test".to_owned(),
+            },
+        )
+        .expect("verification is valid");
+        plan.complete(&dependent).expect("dependent completes");
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("plans.sqlite");
+        let mut store = PlanStore::open(&path).expect("store opens");
+        store.save(&plan).expect("completed plan saves");
+
+        // Reopening the file proves the aggregate was committed rather than
+        // held in this session
+        let mut reopened = PlanStore::open(&path).expect("store reopens");
+        let mut loaded = reopened.load(plan.id()).expect("completed plan loads");
+        assert_eq!(
+            loaded
+                .work_item(&dependent)
+                .expect("dependent exists")
+                .status,
+            WorkItemStatus::Completed
+        );
+        loaded
+            .revise_work_item(&prerequisite, "Revise prerequisite")
+            .expect("revision is valid");
+        assert_eq!(
+            loaded
+                .work_item(&prerequisite)
+                .expect("prerequisite exists")
+                .status,
+            WorkItemStatus::Planned
+        );
+        assert_eq!(
+            loaded
+                .work_item(&dependent)
+                .expect("dependent exists")
+                .status,
+            WorkItemStatus::Planned
+        );
+        reopened.save(&loaded).expect("revised plan saves");
+        drop(reopened);
+
+        let mut final_store = PlanStore::open(&path).expect("store opens after revision");
+        let final_plan = final_store.load(plan.id()).expect("revised plan loads");
+        assert_eq!(
+            final_plan
+                .work_item(&dependent)
+                .expect("dependent exists")
+                .status,
+            WorkItemStatus::Planned
+        );
+    }
+
+    #[test]
+    fn plan_store_round_trips_complete_aggregate_and_json() {
+        let mut plan = Plan::new(id("plan-store"), "Persistent plan").expect("plan is valid");
+        let work = id("work-store");
+        plan.add_work_item(work, "Persist this work")
+            .expect("work is valid");
+
+        let (_directory, mut store) = temp_store();
+        store.save(&plan).expect("plan saves");
+        let loaded = store.load(plan.id()).expect("plan loads");
+        assert_eq!(loaded, plan);
+
+        let document = store.export_json(plan.id()).expect("plan exports");
+        let envelope: serde_json::Value = serde_json::from_str(&document).expect("envelope parses");
+        assert_eq!(envelope["interop_schema"], "mg.plan/1");
+        assert_eq!(envelope["kind"], "plan");
+        assert_eq!(envelope["plan_revision"], 1);
+        let imported_id = store.import_json(&document).expect("plan imports");
+        assert_eq!(imported_id, *plan.id());
+        assert_eq!(store.load(plan.id()).expect("imported plan loads"), plan);
+
+        let mut stale: serde_json::Value =
+            serde_json::from_str(&document).expect("envelope parses");
+        stale["plan"]["title"] = serde_json::Value::String("stale import".to_owned());
+        assert!(matches!(
+            store.import_json(&serde_json::to_string(&stale).expect("stale envelope serializes")),
+            Err(StoreError::RevisionConflict { .. })
+        ));
+
+        stale["unexpected"] = serde_json::Value::Bool(true);
+        assert!(matches!(
+            store.import_json(&serde_json::to_string(&stale).expect("invalid envelope serializes")),
+            Err(StoreError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn a_new_store_applies_every_migration_and_records_it() {
+        let (_directory, store) = temp_store();
+        let recorded = {
+            let mut statement = store
+                .connection
+                .prepare("SELECT version FROM schema_migrations ORDER BY version")
+                .expect("ledger reads");
+            let rows = statement
+                .query_map([], |row| row.get::<_, i64>(0))
+                .expect("ledger rows");
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .expect("ledger rows")
+        };
+        assert_eq!(
+            recorded,
+            (1..=MIGRATIONS.len() as i64).collect::<Vec<_>>(),
+            "a store from empty carries every migration this build has"
+        );
+        let journal: String = store
+            .connection
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("journal mode reads");
+        assert_eq!(journal.to_lowercase(), WAL_JOURNAL_MODE);
+        let foreign_keys: i64 = store
+            .connection
+            .query_row("PRAGMA foreign_keys", [], |row| row.get(0))
+            .expect("foreign key setting reads");
+        assert_eq!(foreign_keys, 1);
+    }
+
+    #[test]
+    fn reopening_a_store_applies_no_further_migrations() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("plans.sqlite");
+        let plan = Plan::new(id("plan-migrate"), "Migration plan").expect("plan is valid");
+        let mut first = PlanStore::open(&path).expect("store opens");
+        first.create(&plan).expect("plan creates");
+        drop(first);
+
+        let second = PlanStore::open(&path).expect("store reopens");
+        let applied: i64 = second
+            .connection
+            .query_row("SELECT COUNT(*) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .expect("ledger counts");
+        assert_eq!(applied, MIGRATIONS.len() as i64);
+    }
+
+    #[test]
+    fn a_ledger_ahead_of_this_build_is_refused() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("plans.sqlite");
+        // a store written by a newer mg-plan records migrations this build does not carry
+        let connection = Connection::open(&path).expect("file opens");
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
+                 INSERT INTO schema_migrations (version) VALUES (1), (2), (3);",
+            )
+            .expect("ledger writes");
+        drop(connection);
+        assert!(matches!(
+            PlanStore::open(&path),
+            Err(StoreError::LedgerAhead)
+        ));
+    }
+
+    #[test]
+    fn a_store_name_and_override_resolve_under_the_application_data_folder() {
+        assert_eq!(
+            store_path_with_override("planr", None).expect("a plain name resolves"),
+            data_directory().join("mg-planr/planr.sqlite")
+        );
+        let allowed = data_directory().join("mg-planr/alternate.sqlite");
+        assert_eq!(
+            store_path_with_override("planr", Some(allowed.clone().into_os_string()))
+                .expect("the application-owned override resolves"),
+            allowed
+        );
+        assert!(matches!(
+            store_path_with_override("planr", Some(OsString::from("/tmp/elsewhere.sqlite"))),
+            Err(StoreError::InvalidStoreName)
+        ));
+        for rejected in ["", "   ", ".hidden", "../escape", "nested/name"] {
+            assert!(
+                matches!(
+                    store_path_with_override(rejected, None),
+                    Err(StoreError::InvalidStoreName)
+                ),
+                "{rejected} is not a store name"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_plan_is_reported_by_every_read_and_write() {
+        let (_directory, mut store) = temp_store();
+        let missing: PlanId = id("plan-missing");
+        let plan = Plan::new(missing.clone(), "Never stored").expect("plan is valid");
+        assert!(matches!(
+            store.load(&missing),
+            Err(StoreError::PlanNotFound(reported)) if reported == missing
+        ));
+        assert!(matches!(
+            store.load_versioned(&missing),
+            Err(StoreError::PlanNotFound(reported)) if reported == missing
+        ));
+        assert!(matches!(
+            store.history(&missing),
+            Err(StoreError::PlanNotFound(reported)) if reported == missing
+        ));
+        assert!(matches!(
+            store.export_json(&missing),
+            Err(StoreError::PlanNotFound(reported)) if reported == missing
+        ));
+        assert!(matches!(
+            store.save_if_revision(&plan, 1),
+            Err(StoreError::PlanNotFound(reported)) if reported == missing
+        ));
+    }
+
+    #[test]
+    fn a_second_create_and_a_stale_save_are_both_conflicts() {
+        let (_directory, mut store) = temp_store();
+        let plan = Plan::new(id("plan-twice"), "Created once").expect("plan is valid");
+        store.create(&plan).expect("plan creates");
+        assert!(matches!(
+            store.create(&plan),
+            Err(StoreError::RevisionConflict {
+                expected: 0,
+                actual: 1,
+                ..
+            })
+        ));
+        assert!(matches!(
+            store.save_if_revision(&plan, 7),
+            Err(StoreError::RevisionConflict {
+                expected: 7,
+                actual: 1,
+                ..
+            })
+        ));
+        // save is the compatibility path: it reads the stored revision itself and succeeds
+        store
+            .save(&plan)
+            .expect("plan saves against its own revision");
+        assert_eq!(
+            store
+                .load_versioned(plan.id())
+                .expect("plan loads")
+                .revision,
+            2
+        );
+    }
+
+    #[test]
+    fn a_document_stored_under_another_identifier_is_rejected() {
+        let (_directory, mut store) = temp_store();
+        let plan = Plan::new(id("plan-real"), "Honest plan").expect("plan is valid");
+        store.create(&plan).expect("plan creates");
+        // a row whose document belongs to a different plan is corruption, not a load
+        store
+            .connection
+            .execute(
+                "UPDATE plans SET document_json = ?1 WHERE id = ?2",
+                params![
+                    serde_json::to_string(
+                        &Plan::new(id("plan-other"), "Other plan").expect("plan is valid")
+                    )
+                    .expect("plan serializes"),
+                    "plan-real"
+                ],
+            )
+            .expect("row updates");
+        assert!(matches!(
+            store.load(plan.id()),
+            Err(StoreError::InvalidStoredPlan)
+        ));
+    }
+
+    #[test]
+    fn plan_store_persists_after_reopen() {
+        let plan = Plan::new(id("plan-reopen"), "Restart plan").expect("plan is valid");
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let path = directory.path().join("plans.sqlite");
+        let mut first = PlanStore::open(&path).expect("store opens");
+        first.save(&plan).expect("plan saves");
+        let mut second = PlanStore::open(&path).expect("store reopens");
+        assert_eq!(second.load(plan.id()).expect("plan loads"), plan);
+    }
+
+    #[test]
+    fn passing_verification_requires_evidence() {
+        let mut plan = Plan::new(id("plan-1"), "Evidence test").expect("plan is valid");
+        let work: WorkItemId = id("work-1");
+        let criterion: CriterionId = id("criterion-1");
+        plan.add_work_item(work.clone(), "Work")
+            .expect("work is valid");
+        plan.add_criterion(&work, criterion.clone(), "The behavior is demonstrated")
+            .expect("criterion is valid");
+        assert_eq!(
+            plan.record_verification(
+                &work,
+                VerificationInput {
+                    id: id("verification-1"),
+                    criterion_id: criterion,
+                    subject_revision: 2,
+                    evidence: Vec::new(),
+                    result: VerificationResult::Pass,
+                    verifier: "human:jeff".to_owned(),
+                },
+            ),
+            Err(PlanError::PassRequiresEvidence)
+        );
+    }
+
+    // One retired PostgreSQL row, in the shape `psql` is asked to emit
+    fn postgres_plan_row(id: &str, document: &str, revision: u64) -> serde_json::Value {
+        serde_json::json!({
+            "id": id,
+            "title": "Carried across",
+            "document_json": document,
+            "revision": revision,
+        })
+    }
+
+    #[test]
+    fn adopted_postgres_rows_keep_their_revision_and_history() {
+        let (_directory, mut store) = temp_store();
+        let plan = Plan::new(id("plan-adopted"), "Carried across").expect("plan is valid");
+        let document = serde_json::to_string(&plan).expect("plan serializes");
+        let export = serde_json::json!({
+            "plans": [postgres_plan_row("plan-adopted", &document, 5)],
+            "mutation_history": [
+                {"plan_id": "plan-adopted", "revision": 4, "document_json": document},
+                {"plan_id": "plan-adopted", "revision": 5, "document_json": document},
+            ],
+        })
+        .to_string();
+
+        let adopted = store.adopt_postgres_rows(&export).expect("the rows adopt");
+
+        assert_eq!(
+            adopted,
+            Adoption {
+                plans: 1,
+                history: 2
+            }
+        );
+        let stored = store.load_versioned(plan.id()).expect("the plan loads");
+        assert_eq!(stored.plan, plan);
+        assert_eq!(stored.revision, 5);
+        assert_eq!(
+            store
+                .history(plan.id())
+                .expect("the history loads")
+                .iter()
+                .map(|record| record.revision)
+                .collect::<Vec<_>>(),
+            vec![4, 5]
+        );
+        // the optimistic lock carries on from the revision PostgreSQL had reached,
+        // which is the whole reason the envelope import could not be used
+        store
+            .save_if_revision(&plan, 5)
+            .expect("the adopted revision still owns the plan");
+    }
+
+    #[test]
+    fn a_lying_or_colliding_adoption_leaves_the_store_untouched() {
+        let (_directory, mut store) = temp_store();
+        let held = Plan::new(id("plan-held"), "Already here").expect("plan is valid");
+        store.create(&held).expect("the plan is created");
+        let document = serde_json::to_string(&held).expect("plan serializes");
+
+        // a row carrying some other plan's document is refused before anything is written
+        let lying = serde_json::json!({
+            "plans": [postgres_plan_row("plan-elsewhere", &document, 2)],
+        })
+        .to_string();
+        assert!(matches!(
+            store.adopt_postgres_rows(&lying),
+            Err(StoreError::InvalidStoredPlan)
+        ));
+
+        // and a plan this store already holds is refused rather than overwritten,
+        // taking the rows adopted ahead of it back out again
+        let fresh = Plan::new(id("plan-fresh"), "Carried across").expect("plan is valid");
+        let fresh_document = serde_json::to_string(&fresh).expect("plan serializes");
+        let colliding = serde_json::json!({
+            "plans": [
+                postgres_plan_row("plan-fresh", &fresh_document, 3),
+                postgres_plan_row("plan-held", &document, 9),
+            ],
+        })
+        .to_string();
+        assert!(matches!(
+            store.adopt_postgres_rows(&colliding),
+            Err(StoreError::PlanAlreadyStored(_))
+        ));
+        assert!(matches!(
+            store.load_versioned(fresh.id()),
+            Err(StoreError::PlanNotFound(_))
+        ));
+        assert_eq!(
+            store
+                .load_versioned(held.id())
+                .expect("the held plan loads")
+                .revision,
+            1
+        );
+    }
+}
