@@ -3,6 +3,7 @@
 **Status:** Draft architecture and implementation plan
 **Created:** 2026-09-01
 **Update when:** Geist features are fully implemented, interop contracts stabilize, or Coreforge's curriculum/diagnostic model changes materially.
+**Paths changed 2026-10-19:** `~/mg-coreforge` and its nested `bootcamp` merged into `~/workshop` (e.g. `bootcamp/CERT_PLAN.md` → `plan/CERT_PLAN.md`, `curriculum/` → `reference/curriculum/`). Translate the paths below through the old→new table in `~/workshop/README.md`; the reference and URI shapes here are unrevised.
 
 ## Purpose
 
