@@ -15,7 +15,7 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
 use crate::listen::{self, Now, Sleep};
 use crate::scan;
-use crate::store::{self, Store};
+use crate::store::{self, BookSort, Store};
 
 mod draw;
 pub mod state;
@@ -66,7 +66,7 @@ fn event_loop(
     let store = Store::open(store::default_path())?;
     let mut state = State {
         continuing: store.in_progress(CONTINUE_SHOWN)?,
-        library: store.books(None, false)?,
+        library: store.books_sorted(None, false, BookSort::Recent)?,
         ..Default::default()
     };
     loop {
@@ -80,7 +80,7 @@ fn event_loop(
                     state.message = Some(m);
                     // a scan changes both lists
                     state.continuing = store.in_progress(CONTINUE_SHOWN)?;
-                    state.library = store.books(None, false)?;
+                    state.library = store.books_sorted(None, false, state.sort)?;
                     state.clamp();
                 }
             }
@@ -112,7 +112,10 @@ fn apply(effect: Effect, state: &mut State, store: &Store, tx: &Sender<Update>) 
     match effect {
         Effect::None | Effect::Quit => {}
         Effect::LoadContinue => state.continuing = store.in_progress(CONTINUE_SHOWN)?,
-        Effect::LoadLibrary => state.library = store.books(None, false)?,
+        Effect::LoadLibrary(sort) => {
+            state.sort = sort;
+            state.library = store.books_sorted(None, false, sort)?;
+        }
         Effect::Scan => {
             let tx = tx.clone();
             state.message = Some("looking through the book folders\u{2026}".into());

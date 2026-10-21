@@ -38,6 +38,24 @@ CREATE TABLE chapters (book_id INTEGER NOT NULL REFERENCES books(id) ON DELETE C
     "ALTER TABLE books ADD COLUMN speed REAL;",
     // M3: how this book is read, pages or scroll; unset means the reader's own default
     "ALTER TABLE books ADD COLUMN reading_mode TEXT;",
+    // M4: global reading status, manual per-list order, and persistent scan fingerprints
+    "\
+ALTER TABLE books ADD COLUMN status TEXT NOT NULL DEFAULT 'to-read'; \
+UPDATE books SET status=CASE \
+  WHEN EXISTS(SELECT 1 FROM progress p WHERE p.book_id=books.id AND p.finished=1) THEN 'finished' \
+  WHEN EXISTS(SELECT 1 FROM progress p WHERE p.book_id=books.id AND p.percent<>0) THEN 'reading' \
+  ELSE 'to-read' END; \
+ALTER TABLE collection_books ADD COLUMN position INTEGER NOT NULL DEFAULT 0; \
+UPDATE collection_books AS cb SET position=( \
+  SELECT COUNT(*) FROM collection_books AS earlier \
+  JOIN books AS eb ON eb.id=earlier.book_id \
+  JOIN books AS current ON current.id=cb.book_id \
+  WHERE earlier.collection_id=cb.collection_id AND \
+    (eb.title COLLATE NOCASE < current.title COLLATE NOCASE OR \
+     (eb.title COLLATE NOCASE=current.title COLLATE NOCASE AND earlier.book_id<cb.book_id))); \
+CREATE INDEX collection_books_order ON collection_books(collection_id,position,book_id); \
+CREATE TABLE scan_fingerprints (root TEXT NOT NULL, path TEXT NOT NULL, fingerprint TEXT NOT NULL, \
+  PRIMARY KEY(root,path), FOREIGN KEY(root,path) REFERENCES books(root,path) ON DELETE CASCADE);",
 ];
 
 // how a book can be read
@@ -45,6 +63,87 @@ pub const READING_MODES: [&str; 2] = ["pages", "scroll"];
 
 // what kinds of book there are
 pub const KINDS: [&str; 5] = ["epub", "pdf", "comic", "audio", "audio-folder"];
+pub const MAX_BOOK_SEARCH_CHARS: usize = 200;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
+#[serde(rename_all = "kebab-case")]
+pub enum BookStatus {
+    #[value(name = "to-read")]
+    ToRead,
+    Reading,
+    Paused,
+    Finished,
+}
+
+impl BookStatus {
+    pub const ALL: [Self; 4] = [Self::ToRead, Self::Reading, Self::Paused, Self::Finished];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ToRead => "to-read",
+            Self::Reading => "reading",
+            Self::Paused => "paused",
+            Self::Finished => "finished",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "to-read" => Ok(Self::ToRead),
+            "reading" => Ok(Self::Reading),
+            "paused" => Ok(Self::Paused),
+            "finished" => Ok(Self::Finished),
+            _ => bail!("status is one of to-read, reading, paused, finished"),
+        }
+    }
+}
+
+impl std::fmt::Display for BookStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CollectionSort {
+    Manual,
+    Title,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BookSort {
+    #[default]
+    Recent,
+    Title,
+    Author,
+    Series,
+}
+
+impl BookSort {
+    pub fn label(self) -> &'static str {
+        match self {
+            BookSort::Recent => "recent",
+            BookSort::Title => "title",
+            BookSort::Author => "author",
+            BookSort::Series => "series",
+        }
+    }
+
+    fn order_by(self) -> &'static str {
+        match self {
+            // Keep the existing default order exactly as-is.
+            BookSort::Recent => "p.updated_at IS NULL, p.updated_at DESC, b.title COLLATE NOCASE",
+            BookSort::Title => "b.title COLLATE NOCASE, b.id",
+            BookSort::Author => {
+                "b.author IS NULL, b.author COLLATE NOCASE, b.title COLLATE NOCASE, b.id"
+            }
+            BookSort::Series => {
+                "b.series IS NULL, b.series COLLATE NOCASE, b.series_index IS NULL, \
+                b.series_index, b.title COLLATE NOCASE, b.id"
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Book {
@@ -67,6 +166,28 @@ pub struct Book {
     pub updated_at: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct BookRecord {
+    #[serde(flatten)]
+    pub book: Book,
+    pub status: BookStatus,
+}
+
+impl Book {
+    pub fn matches_text(&self, query: &str) -> bool {
+        let needle = query.trim().to_lowercase();
+        needle.is_empty() || self.matches_folded(&needle)
+    }
+
+    fn matches_folded(&self, needle: &str) -> bool {
+        std::iter::once(self.title.as_str())
+            .chain(self.author.as_deref())
+            .chain(self.series.as_deref())
+            .chain(std::iter::once(self.path.as_str()))
+            .any(|field| field.to_lowercase().contains(needle))
+    }
+}
+
 // What a scan learned about one book, before it has an id
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Found {
@@ -84,6 +205,29 @@ pub struct Found {
     pub tracks: Vec<(String, Option<f64>)>,
     // audiobooks: (title, start seconds) across the whole book
     pub chapters: Vec<(String, f64)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ScanMetadata {
+    Unchanged,
+    Parsed(Found),
+    Failed { fallback: Found, error: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScanRecord {
+    pub root: String,
+    pub path: String,
+    pub fingerprint: String,
+    pub metadata: ScanMetadata,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ScanSaveReport {
+    pub added: usize,
+    pub updated: usize,
+    pub unchanged: usize,
+    pub missing: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -270,17 +414,198 @@ impl Store {
         Ok((added, missing))
     }
 
-    // Books, most recently read first, then by title; missing ones only when asked
+    // Incremental scan save: only complete roots participate in missing-book reconciliation.
+    pub fn save_incremental_scan(
+        &self,
+        complete_roots: &[String],
+        records: &[ScanRecord],
+    ) -> Result<ScanSaveReport> {
+        let mut connection = self.conn()?;
+        let tx = connection.transaction()?;
+        let now = Utc::now().to_rfc3339();
+        for root in complete_roots {
+            tx.execute(
+                "UPDATE books SET missing=2 WHERE root=?1 AND missing=0",
+                params![root],
+            )?;
+        }
+
+        let mut report = ScanSaveReport::default();
+        for record in records {
+            let known: Option<i64> = tx
+                .query_row(
+                    "SELECT id FROM books WHERE root=?1 AND path=?2",
+                    params![record.root, record.path],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            match &record.metadata {
+                ScanMetadata::Unchanged => {
+                    let id = known.with_context(|| {
+                        format!(
+                            "unchanged fingerprint has no book {}/{}",
+                            record.root, record.path
+                        )
+                    })?;
+                    let saved: Option<String> = tx
+                        .query_row(
+                            "SELECT fingerprint FROM scan_fingerprints WHERE root=?1 AND path=?2",
+                            params![record.root, record.path],
+                            |row| row.get(0),
+                        )
+                        .optional()?;
+                    if saved.as_deref() != Some(record.fingerprint.as_str()) {
+                        bail!(
+                            "stale unchanged fingerprint for {}/{}",
+                            record.root,
+                            record.path
+                        )
+                    }
+                    tx.execute("UPDATE books SET missing=0 WHERE id=?1", params![id])?;
+                    report.unchanged += 1;
+                }
+                ScanMetadata::Parsed(found) => {
+                    if found.root != record.root || found.path != record.path {
+                        bail!("scan metadata path does not match its fingerprint key")
+                    }
+                    let id = match known {
+                        Some(id) => {
+                            tx.execute(
+                                "UPDATE books SET kind=?1,title=?2,author=?3,series=?4,series_index=?5,cover=?6,pages=?7, \
+                                 duration_seconds=?8,missing=0 WHERE id=?9",
+                                params![found.kind, found.title, found.author, found.series, found.series_index, found.cover, found.pages, found.duration_seconds, id],
+                            )?;
+                            report.updated += 1;
+                            id
+                        }
+                        None => {
+                            tx.execute(
+                                "INSERT INTO books(kind,root,path,title,author,series,series_index,cover,pages,duration_seconds,added_at) \
+                                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                                params![found.kind, found.root, found.path, found.title, found.author, found.series, found.series_index, found.cover, found.pages, found.duration_seconds, now],
+                            )?;
+                            report.added += 1;
+                            tx.last_insert_rowid()
+                        }
+                    };
+                    Self::replace_scan_children(&tx, id, found)?;
+                    tx.execute(
+                        "INSERT INTO scan_fingerprints(root,path,fingerprint) VALUES (?1,?2,?3) \
+                         ON CONFLICT(root,path) DO UPDATE SET fingerprint=excluded.fingerprint",
+                        params![record.root, record.path, record.fingerprint],
+                    )?;
+                }
+                ScanMetadata::Failed { fallback, error: _ } => {
+                    if fallback.root != record.root || fallback.path != record.path {
+                        bail!("failed scan path does not match its fingerprint key")
+                    }
+                    if let Some(id) = known {
+                        // Preserve the last good metadata, tracks, chapters and fingerprint.
+                        tx.execute("UPDATE books SET missing=0 WHERE id=?1", params![id])?;
+                    } else {
+                        tx.execute(
+                            "INSERT INTO books(kind,root,path,title,author,series,series_index,cover,pages,duration_seconds,added_at) \
+                             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                            params![fallback.kind, fallback.root, fallback.path, fallback.title, fallback.author, fallback.series, fallback.series_index, fallback.cover, fallback.pages, fallback.duration_seconds, now],
+                        )?;
+                        report.added += 1;
+                    }
+                }
+            }
+        }
+        report.missing = tx.execute("UPDATE books SET missing=1 WHERE missing=2", [])?;
+        tx.commit()?;
+        Ok(report)
+    }
+
+    fn replace_scan_children(tx: &rusqlite::Transaction<'_>, id: i64, found: &Found) -> Result<()> {
+        tx.execute("DELETE FROM tracks WHERE book_id=?1", params![id])?;
+        for (index, (path, duration)) in found.tracks.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO tracks(book_id,idx,path,duration_seconds) VALUES (?1,?2,?3,?4)",
+                params![id, index as i64, path, duration],
+            )?;
+        }
+        tx.execute("DELETE FROM chapters WHERE book_id=?1", params![id])?;
+        for (index, (title, start)) in found.chapters.iter().enumerate() {
+            tx.execute(
+                "INSERT INTO chapters(book_id,idx,title,start_seconds) VALUES (?1,?2,?3,?4)",
+                params![id, index as i64, title, start],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn scan_fingerprint(&self, root: &str, path: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()?
+            .query_row(
+                "SELECT fingerprint FROM scan_fingerprints WHERE root=?1 AND path=?2",
+                params![root, path],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn scan_fingerprints(
+        &self,
+        root: &str,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let connection = self.conn()?;
+        let mut statement = connection.prepare(
+            "SELECT path,fingerprint FROM scan_fingerprints WHERE root=?1 ORDER BY path",
+        )?;
+        let rows = statement
+            .query_map(params![root], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?;
+        Ok(rows)
+    }
+
+    // Keep the current default ordering and missing-book policy for existing callers.
     pub fn books(&self, kind: Option<&str>, include_missing: bool) -> Result<Vec<Book>> {
+        self.books_sorted(kind, include_missing, BookSort::Recent)
+    }
+
+    pub fn books_sorted(
+        &self,
+        kind: Option<&str>,
+        include_missing: bool,
+        sort: BookSort,
+    ) -> Result<Vec<Book>> {
         let c = self.conn()?;
-        let mut st = c.prepare(&format!(
+        let query = format!(
             "{BOOK_SELECT} WHERE (?1 IS NULL OR b.kind=?1 OR (?1='audio' AND b.kind='audio-folder')) AND (?2=1 OR b.missing=0) \
-             ORDER BY p.updated_at IS NULL, p.updated_at DESC, b.title COLLATE NOCASE"
-        ))?;
+             ORDER BY {}",
+            sort.order_by()
+        );
+        let mut st = c.prepare(&query)?;
         let rows = st
             .query_map(params![kind, include_missing as i64], book_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    // Search the existing library metadata without changing stored records or scan behavior.
+    pub fn search_books(
+        &self,
+        query: &str,
+        kind: Option<&str>,
+        include_missing: bool,
+        sort: BookSort,
+        limit: usize,
+    ) -> Result<Vec<Book>> {
+        let query = query.trim();
+        let characters = query.chars().count();
+        if characters == 0 || characters > MAX_BOOK_SEARCH_CHARS {
+            bail!("search text is 1–{MAX_BOOK_SEARCH_CHARS} characters")
+        }
+        let needle = query.to_lowercase();
+        Ok(self
+            .books_sorted(kind, include_missing, sort)?
+            .into_iter()
+            .filter(|book| book.matches_folded(&needle))
+            .take(limit.clamp(1, 1000))
+            .collect())
     }
 
     pub fn book(&self, id: i64) -> Result<Book> {
@@ -294,6 +619,38 @@ impl Store {
             .with_context(|| format!("no book {id}"))
     }
 
+    pub fn status(&self, id: i64) -> Result<BookStatus> {
+        let status: Option<String> = self
+            .conn()?
+            .query_row("SELECT status FROM books WHERE id=?1", params![id], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        BookStatus::parse(&status.with_context(|| format!("no book {id}"))?)
+    }
+
+    pub fn records_for_books(&self, books: &[Book]) -> Result<Vec<BookRecord>> {
+        let connection = self.conn()?;
+        let mut statement = connection.prepare("SELECT status FROM books WHERE id=?1")?;
+        books
+            .iter()
+            .map(|book| {
+                let status: String = statement
+                    .query_row(params![book.id], |row| row.get(0))
+                    .with_context(|| format!("no book {}", book.id))?;
+                Ok(BookRecord {
+                    book: book.clone(),
+                    status: BookStatus::parse(&status)?,
+                })
+            })
+            .collect()
+    }
+
+    pub fn book_record(&self, id: i64) -> Result<BookRecord> {
+        let book = self.book(id)?;
+        Ok(self.records_for_books(&[book])?.remove(0))
+    }
+
     // Books started and not finished, most recent first — "continue reading / listening"
     pub fn in_progress(&self, limit: usize) -> Result<Vec<Book>> {
         let c = self.conn()?;
@@ -304,6 +661,64 @@ impl Store {
             .query_map(params![limit.clamp(1, 100) as i64], book_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    pub fn set_status(&self, id: i64, status: BookStatus) -> Result<()> {
+        let changed = self.conn()?.execute(
+            "UPDATE books SET status=?2 WHERE id=?1",
+            params![id, status.as_str()],
+        )?;
+        if changed != 1 {
+            bail!("no book {id}")
+        }
+        Ok(())
+    }
+
+    pub fn set_status_many(&self, ids: &[i64], status: BookStatus) -> Result<usize> {
+        if ids.is_empty() {
+            bail!("at least one book id is required")
+        }
+        let mut c = self.conn()?;
+        let tx = c.transaction()?;
+        let mut unique = std::collections::HashSet::new();
+        for id in ids.iter().copied().filter(|id| unique.insert(*id)) {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM books WHERE id=?1)",
+                params![id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                bail!("no book {id}")
+            }
+            tx.execute(
+                "UPDATE books SET status=?2 WHERE id=?1",
+                params![id, status.as_str()],
+            )?;
+        }
+        let count = unique.len();
+        tx.commit()?;
+        Ok(count)
+    }
+
+    // Opening a to-read or paused book starts it; explicit statuses otherwise stay untouched.
+    pub fn mark_opened(&self, id: i64) -> Result<()> {
+        let mut c = self.conn()?;
+        let tx = c.transaction()?;
+        let changed = tx.execute(
+            "UPDATE books SET status='reading' WHERE id=?1 AND status IN ('to-read','paused')",
+            params![id],
+        )?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM books WHERE id=?1)",
+            params![id],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            bail!("no book {id}")
+        }
+        let _ = changed;
+        tx.commit()?;
+        Ok(())
     }
 
     // Remember where you are; 99.5% or more counts as finished unless told otherwise
@@ -319,7 +734,9 @@ impl Store {
         }
         let percent = percent.clamp(0.0, 100.0);
         let finished = finished.unwrap_or(percent >= 99.5);
-        let changed = self.conn()?.execute(
+        let mut c = self.conn()?;
+        let tx = c.transaction()?;
+        let changed = tx.execute(
             "INSERT INTO progress(book_id,location,percent,finished,updated_at) SELECT id,?2,?3,?4,?5 FROM books WHERE id=?1 \
              ON CONFLICT(book_id) DO UPDATE SET location=excluded.location,percent=excluded.percent, \
              finished=excluded.finished,updated_at=excluded.updated_at",
@@ -328,6 +745,13 @@ impl Store {
         if changed == 0 {
             bail!("no book {id}")
         }
+        if finished {
+            tx.execute(
+                "UPDATE books SET status='finished' WHERE id=?1",
+                params![id],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -476,39 +900,238 @@ impl Store {
 
     // ── Collections ──
 
-    pub fn collect(&self, name: &str, book_id: i64) -> Result<()> {
+    fn checked_collection_name(name: &str) -> Result<&str> {
         let name = name.trim();
         if name.is_empty() || name.len() > 80 {
             bail!("a collection name is 1–80 characters")
         }
-        let mut c = self.conn()?;
-        let tx = c.transaction()?;
-        tx.execute(
-            "INSERT INTO collections(name) VALUES (?1) ON CONFLICT(name) DO NOTHING",
-            params![name],
+        Ok(name)
+    }
+
+    fn collection_id_in(connection: &rusqlite::Connection, name: &str) -> Result<i64> {
+        connection
+            .query_row(
+                "SELECT id FROM collections WHERE name=?1",
+                params![name],
+                |row| row.get(0),
+            )
+            .optional()?
+            .with_context(|| format!("no collection {name}"))
+    }
+
+    fn normalize_collection_order(
+        tx: &rusqlite::Transaction<'_>,
+        collection_id: i64,
+    ) -> Result<()> {
+        let ids = {
+            let mut statement = tx.prepare(
+                "SELECT book_id FROM collection_books WHERE collection_id=?1 ORDER BY position,book_id",
+            )?;
+            statement
+                .query_map(params![collection_id], |row| row.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (position, book_id) in ids.into_iter().enumerate() {
+            tx.execute(
+                "UPDATE collection_books SET position=?3 WHERE collection_id=?1 AND book_id=?2",
+                params![collection_id, book_id, position as i64],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn create_collection(&self, name: &str) -> Result<i64> {
+        let name = Self::checked_collection_name(name)?;
+        let connection = self.conn()?;
+        connection.execute("INSERT INTO collections(name) VALUES (?1)", params![name])?;
+        Ok(connection.last_insert_rowid())
+    }
+
+    pub fn collection_id(&self, name: &str) -> Result<i64> {
+        Self::collection_id_in(&self.conn()?, name)
+    }
+
+    pub fn rename_collection(&self, old_name: &str, new_name: &str) -> Result<()> {
+        let old_name = old_name.trim();
+        let new_name = Self::checked_collection_name(new_name)?;
+        let connection = self.conn()?;
+        if connection.execute(
+            "UPDATE collections SET name=?2 WHERE name=?1",
+            params![old_name, new_name],
+        )? != 1
+        {
+            bail!("no collection {old_name}")
+        }
+        Ok(())
+    }
+
+    pub fn delete_collection(&self, name: &str) -> Result<()> {
+        let connection = self.conn()?;
+        if connection.execute(
+            "DELETE FROM collections WHERE name=?1",
+            params![name.trim()],
+        )? != 1
+        {
+            bail!("no collection {}", name.trim())
+        }
+        Ok(())
+    }
+
+    pub fn add_to_collection(&self, name: &str, book_id: i64) -> Result<usize> {
+        self.add_many_to_collection(name, &[book_id])
+    }
+
+    pub fn add_many_to_collection(&self, name: &str, book_ids: &[i64]) -> Result<usize> {
+        let name = name.trim();
+        if book_ids.is_empty() {
+            bail!("at least one book id is required")
+        }
+        let mut connection = self.conn()?;
+        let tx = connection.transaction()?;
+        let collection_id = Self::collection_id_in(&tx, name)?;
+        let mut unique = std::collections::HashSet::new();
+        let ids = book_ids
+            .iter()
+            .copied()
+            .filter(|id| unique.insert(*id))
+            .collect::<Vec<_>>();
+        for book_id in &ids {
+            let exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM books WHERE id=?1)",
+                params![book_id],
+                |row| row.get(0),
+            )?;
+            if !exists {
+                bail!("no book {book_id}")
+            }
+        }
+        let mut position: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(position)+1,0) FROM collection_books WHERE collection_id=?1",
+            params![collection_id],
+            |row| row.get(0),
         )?;
-        let added = tx.execute(
-            "INSERT OR IGNORE INTO collection_books(collection_id,book_id) SELECT c.id,b.id FROM collections c, books b WHERE c.name=?1 AND b.id=?2",
-            params![name, book_id],
-        )?;
+        let mut added = 0;
+        for book_id in ids {
+            let inserted = tx.execute(
+                "INSERT OR IGNORE INTO collection_books(collection_id,book_id,position) VALUES (?1,?2,?3)",
+                params![collection_id, book_id, position],
+            )?;
+            if inserted == 1 {
+                position += 1;
+                added += 1;
+            }
+        }
+        tx.commit()?;
+        Ok(added)
+    }
+
+    pub fn remove_from_collection(&self, name: &str, book_id: i64) -> Result<usize> {
+        self.remove_many_from_collection(name, &[book_id])
+    }
+
+    pub fn remove_many_from_collection(&self, name: &str, book_ids: &[i64]) -> Result<usize> {
+        if book_ids.is_empty() {
+            bail!("at least one book id is required")
+        }
+        let mut connection = self.conn()?;
+        let tx = connection.transaction()?;
+        let collection_id = Self::collection_id_in(&tx, name.trim())?;
+        let mut unique = std::collections::HashSet::new();
+        let mut removed = 0;
+        for book_id in book_ids.iter().copied().filter(|id| unique.insert(*id)) {
+            removed += tx.execute(
+                "DELETE FROM collection_books WHERE collection_id=?1 AND book_id=?2",
+                params![collection_id, book_id],
+            )?;
+        }
+        Self::normalize_collection_order(&tx, collection_id)?;
+        tx.commit()?;
+        Ok(removed)
+    }
+
+    pub fn reorder_collection(&self, name: &str, book_id: i64, position: usize) -> Result<()> {
+        let mut connection = self.conn()?;
+        let tx = connection.transaction()?;
+        let collection_id = Self::collection_id_in(&tx, name.trim())?;
+        let mut ids = {
+            let mut statement = tx.prepare(
+                "SELECT book_id FROM collection_books WHERE collection_id=?1 ORDER BY position,book_id",
+            )?;
+            statement
+                .query_map(params![collection_id], |row| row.get::<_, i64>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let current = ids
+            .iter()
+            .position(|id| *id == book_id)
+            .with_context(|| format!("book {book_id} is not in collection {name}"))?;
+        if position >= ids.len() {
+            bail!(
+                "collection position must be between 0 and {}",
+                ids.len() - 1
+            )
+        }
+        let moved = ids.remove(current);
+        ids.insert(position, moved);
+        for (new_position, id) in ids.into_iter().enumerate() {
+            tx.execute(
+                "UPDATE collection_books SET position=?3 WHERE collection_id=?1 AND book_id=?2",
+                params![collection_id, id, new_position as i64],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    // Compatibility helper: older callers can still create a list implicitly.
+    pub fn collect(&self, name: &str, book_id: i64) -> Result<()> {
+        let name = Self::checked_collection_name(name)?;
+        let mut connection = self.conn()?;
+        let tx = connection.transaction()?;
         let exists: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM books WHERE id=?1)",
             params![book_id],
-            |r| r.get(0),
+            |row| row.get(0),
         )?;
         if !exists {
             bail!("no book {book_id}")
         }
-        let _ = added;
+        tx.execute(
+            "INSERT INTO collections(name) VALUES (?1) ON CONFLICT(name) DO NOTHING",
+            params![name],
+        )?;
+        let collection_id = Self::collection_id_in(&tx, name)?;
+        let position: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(position)+1,0) FROM collection_books WHERE collection_id=?1",
+            params![collection_id],
+            |row| row.get(0),
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO collection_books(collection_id,book_id,position) VALUES (?1,?2,?3)",
+            params![collection_id, book_id, position],
+        )?;
         tx.commit()?;
         Ok(())
     }
 
     pub fn uncollect(&self, name: &str, book_id: i64) -> Result<()> {
-        self.conn()?.execute(
-            "DELETE FROM collection_books WHERE book_id=?2 AND collection_id=(SELECT id FROM collections WHERE name=?1)",
-            params![name, book_id],
-        )?;
+        let mut connection = self.conn()?;
+        let tx = connection.transaction()?;
+        let maybe_id: Option<i64> = tx
+            .query_row(
+                "SELECT id FROM collections WHERE name=?1",
+                params![name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(collection_id) = maybe_id {
+            tx.execute(
+                "DELETE FROM collection_books WHERE book_id=?2 AND collection_id=?1",
+                params![collection_id, book_id],
+            )?;
+            Self::normalize_collection_order(&tx, collection_id)?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -524,12 +1147,22 @@ impl Store {
         Ok(rows)
     }
 
+    // Manual membership order is the default. Title order is a view only.
     pub fn collection(&self, name: &str) -> Result<Vec<Book>> {
-        let c = self.conn()?;
-        let mut st = c.prepare(&format!(
-            "{BOOK_SELECT} JOIN collection_books cb ON cb.book_id=b.id JOIN collections c ON c.id=cb.collection_id WHERE c.name=?1 ORDER BY b.title COLLATE NOCASE"
-        ))?;
-        let rows = st
+        self.collection_sorted(name, CollectionSort::Manual)
+    }
+
+    pub fn collection_sorted(&self, name: &str, sort: CollectionSort) -> Result<Vec<Book>> {
+        let order = match sort {
+            CollectionSort::Manual => "cb.position,cb.book_id",
+            CollectionSort::Title => "b.title COLLATE NOCASE,b.id",
+        };
+        let query = format!(
+            "{BOOK_SELECT} JOIN collection_books cb ON cb.book_id=b.id JOIN collections c ON c.id=cb.collection_id WHERE c.name=?1 ORDER BY {order}"
+        );
+        let connection = self.conn()?;
+        let mut statement = connection.prepare(&query)?;
+        let rows = statement
             .query_map(params![name], book_from_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -665,6 +1298,141 @@ mod tests {
     }
 
     #[test]
+    fn book_search_matches_existing_metadata_case_insensitively_and_respects_filters() {
+        let (_d, store) = store();
+        let mut left = found(
+            "books",
+            "science-fiction/left-hand.epub",
+            "The Left Hand of Darkness",
+        );
+        left.author = Some("Ursula K. Le Guin".into());
+        left.series = Some("Hainish Cycle".into());
+        let mut wizard = found("books", "fantasy/wizard.epub", "A Wizard of Earthsea");
+        wizard.author = Some("Ursula K. Le Guin".into());
+        wizard.series = Some("Earthsea".into());
+        let mut atuan = found("books", "fantasy/atuan.epub", "The Tombs of Atuan");
+        atuan.author = Some("Ursula K. Le Guin".into());
+        atuan.series = Some("Earthsea".into());
+        let mut audio = found("audiobooks", "earthsea.m4b", "Earthsea Audiobook");
+        audio.kind = "audio".into();
+        audio.author = Some("Ursula K. Le Guin".into());
+        audio.series = Some("Earthsea".into());
+        store
+            .save_scan(&["books", "audiobooks"], &[left, wizard, atuan, audio])
+            .unwrap();
+
+        let all = store
+            .search_books("  URSULA K. LE GUIN  ", None, false, BookSort::Title, 10)
+            .unwrap();
+        assert_eq!(all.len(), 4);
+        assert_eq!(all[0].title, "A Wizard of Earthsea");
+        assert_eq!(all[3].title, "The Tombs of Atuan");
+
+        let series = store
+            .search_books("earthsea", Some("epub"), false, BookSort::Series, 10)
+            .unwrap();
+        assert_eq!(
+            series
+                .iter()
+                .map(|book| book.title.as_str())
+                .collect::<Vec<_>>(),
+            ["A Wizard of Earthsea", "The Tombs of Atuan"]
+        );
+        let by_path = store
+            .search_books("SCIENCE-FICTION", None, false, BookSort::Title, 10)
+            .unwrap();
+        assert_eq!(by_path.len(), 1);
+        assert_eq!(by_path[0].title, "The Left Hand of Darkness");
+        store.save_scan(&["books"], &[]).unwrap();
+        assert!(
+            store
+                .search_books("left-hand", None, false, BookSort::Title, 10)
+                .unwrap()
+                .is_empty(),
+            "missing books stay hidden unless requested"
+        );
+        assert_eq!(
+            store
+                .search_books("left-hand", None, true, BookSort::Title, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            store
+                .search_books("   ", None, false, BookSort::Recent, 10)
+                .is_err()
+        );
+        assert!(
+            store
+                .search_books(&"x".repeat(201), None, false, BookSort::Recent, 10)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn library_sorts_are_explicit_and_recent_remains_the_default() {
+        let (_d, store) = store();
+        let mut z = found("books", "z.epub", "Zulu");
+        z.author = Some("Zed".into());
+        z.series = Some("Later Series".into());
+        z.series_index = Some(2.0);
+        let mut a = found("books", "a.epub", "Alpha");
+        a.author = Some("Ada".into());
+        a.series = Some("Earlier Series".into());
+        a.series_index = Some(1.0);
+        let mut unknown = found("books", "m.epub", "Middle");
+        unknown.series = None;
+        store.save_scan(&["books"], &[z, a, unknown]).unwrap();
+
+        let recent = store.books(None, false).unwrap();
+        assert_eq!(
+            recent
+                .iter()
+                .map(|book| book.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Alpha", "Middle", "Zulu"],
+            "no-progress books keep the existing title tie-break order"
+        );
+        assert_eq!(
+            recent.iter().map(|book| book.id).collect::<Vec<_>>(),
+            store
+                .books_sorted(None, false, BookSort::Recent)
+                .unwrap()
+                .iter()
+                .map(|book| book.id)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            store
+                .books_sorted(None, false, BookSort::Title)
+                .unwrap()
+                .iter()
+                .map(|book| book.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Alpha", "Middle", "Zulu"]
+        );
+        assert_eq!(
+            store
+                .books_sorted(None, false, BookSort::Author)
+                .unwrap()
+                .iter()
+                .map(|book| book.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Alpha", "Zulu", "Middle"]
+        );
+        assert_eq!(
+            store
+                .books_sorted(None, false, BookSort::Series)
+                .unwrap()
+                .iter()
+                .map(|book| book.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Alpha", "Zulu", "Middle"]
+        );
+    }
+
+    #[test]
     fn continue_reading_is_the_recent_unfinished_ones() {
         let (_d, s) = store();
         s.save_scan(
@@ -717,10 +1485,186 @@ mod tests {
         assert_eq!(s.collections().unwrap(), [("Sci-fi".to_string(), 1)]);
         assert_eq!(s.collection("Sci-fi").unwrap()[0].id, id);
         assert!(s.collect("X", 999).is_err());
+        assert_eq!(s.collections().unwrap(), [("Sci-fi".to_string(), 1)]);
         s.uncollect("Sci-fi", id).unwrap();
         assert_eq!(s.collections().unwrap()[0].1, 0);
         assert_eq!(s.remove_highlight(h).unwrap(), id);
         assert!(s.remove_highlight(h).is_err());
+    }
+
+    #[test]
+    fn v3_migration_backfills_status_and_deterministic_manual_collection_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);")
+                .unwrap();
+            for (index, migration) in MIGRATIONS.iter().take(3).enumerate() {
+                conn.execute_batch(migration).unwrap();
+                conn.execute(
+                    "INSERT INTO schema_migrations(version) VALUES (?1)",
+                    [index as i64 + 1],
+                )
+                .unwrap();
+            }
+            conn.execute_batch(
+                "INSERT INTO books(id,kind,root,path,title,added_at) VALUES
+                    (1,'epub','books','finished.epub','Finished','now'),
+                    (2,'epub','books','reading.epub','Reading','now'),
+                    (3,'epub','books','unstarted.epub','Unstarted','now'),
+                    (4,'epub','books','zulu.epub','Zulu','now'),
+                    (5,'epub','books','alpha.epub','Alpha','now');
+                 INSERT INTO progress(book_id,location,percent,finished,updated_at) VALUES
+                    (1,'1',0,1,'now'), (2,'2',25,0,'now');
+                 INSERT INTO collections(id,name) VALUES (1,'Legacy');
+                 INSERT INTO collection_books(collection_id,book_id) VALUES (1,4),(1,5);",
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.status(1).unwrap(), BookStatus::Finished);
+        assert_eq!(store.status(2).unwrap(), BookStatus::Reading);
+        assert_eq!(store.status(3).unwrap(), BookStatus::ToRead);
+        assert_eq!(
+            store
+                .collection("Legacy")
+                .unwrap()
+                .iter()
+                .map(|b| b.title.as_str())
+                .collect::<Vec<_>>(),
+            ["Alpha", "Zulu"]
+        );
+        let reopened = Store::open(&path).unwrap();
+        assert_eq!(reopened.status(1).unwrap(), BookStatus::Finished);
+        assert_eq!(reopened.collection("Legacy").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn statuses_transition_without_changing_saved_position_and_bulk_updates_are_atomic() {
+        let (_dir, store) = store();
+        store
+            .save_scan(
+                &["books"],
+                &[found("books", "a.epub", "A"), found("books", "b.epub", "B")],
+            )
+            .unwrap();
+        let books = store.books(None, false).unwrap();
+        let (a, b) = (books[0].id, books[1].id);
+        assert_eq!(store.status(a).unwrap(), BookStatus::ToRead);
+        assert_eq!(
+            serde_json::to_value(store.book_record(a).unwrap()).unwrap()["status"],
+            "to-read"
+        );
+        store
+            .set_progress(a, "spine:0.4", 42.0, Some(false))
+            .unwrap();
+        store.mark_opened(a).unwrap();
+        assert_eq!(store.status(a).unwrap(), BookStatus::Reading);
+        store.set_status(a, BookStatus::Paused).unwrap();
+        store.mark_opened(a).unwrap();
+        assert_eq!(store.status(a).unwrap(), BookStatus::Reading);
+        store.set_status(a, BookStatus::Paused).unwrap();
+        store.set_progress(a, "spine:0.8", 99.8, None).unwrap();
+        let finished = store.book(a).unwrap();
+        assert_eq!(store.status(a).unwrap(), BookStatus::Finished);
+        assert_eq!(
+            (finished.location.as_deref(), finished.percent),
+            (Some("spine:0.8"), Some(99.8))
+        );
+        store.set_status_many(&[a, b], BookStatus::Paused).unwrap();
+        assert_eq!(store.status(a).unwrap(), BookStatus::Paused);
+        assert_eq!(store.status(b).unwrap(), BookStatus::Paused);
+        assert!(
+            store
+                .set_status_many(&[a, 999], BookStatus::Reading)
+                .is_err()
+        );
+        assert_eq!(
+            store.status(a).unwrap(),
+            BookStatus::Paused,
+            "failed bulk updates roll back"
+        );
+        assert!(store.set_status(a, BookStatus::ToRead).is_ok());
+        assert_eq!(
+            store.book(a).unwrap().location.as_deref(),
+            Some("spine:0.8")
+        );
+    }
+
+    #[test]
+    fn collections_support_manual_order_bulk_membership_and_non_destructive_delete() {
+        let (_dir, store) = store();
+        store
+            .save_scan(
+                &["books"],
+                &[
+                    found("books", "a.epub", "A"),
+                    found("books", "b.epub", "B"),
+                    found("books", "c.epub", "C"),
+                ],
+            )
+            .unwrap();
+        let books = store.books_sorted(None, false, BookSort::Title).unwrap();
+        let ids = books.iter().map(|book| book.id).collect::<Vec<_>>();
+        let list_id = store.create_collection("Reading now").unwrap();
+        store.create_collection("Favorites").unwrap();
+        store.add_to_collection("Reading now", ids[0]).unwrap();
+        store
+            .add_many_to_collection("Reading now", &[ids[1], ids[2], ids[1]])
+            .unwrap();
+        store.add_to_collection("Favorites", ids[0]).unwrap();
+        assert_eq!(
+            store
+                .collection("Reading now")
+                .unwrap()
+                .iter()
+                .map(|b| b.id)
+                .collect::<Vec<_>>(),
+            ids
+        );
+        store.reorder_collection("Reading now", ids[2], 0).unwrap();
+        assert_eq!(
+            store
+                .collection("Reading now")
+                .unwrap()
+                .iter()
+                .map(|b| b.id)
+                .collect::<Vec<_>>(),
+            [ids[2], ids[0], ids[1]]
+        );
+        assert_eq!(
+            store
+                .collection_sorted("Reading now", CollectionSort::Title)
+                .unwrap()
+                .iter()
+                .map(|b| b.id)
+                .collect::<Vec<_>>(),
+            ids
+        );
+        assert_eq!(store.collection_id("Reading now").unwrap(), list_id);
+        store.rename_collection("Reading now", "Current").unwrap();
+        store
+            .remove_many_from_collection("Current", &[ids[0], ids[1]])
+            .unwrap();
+        assert_eq!(
+            store
+                .collection("Current")
+                .unwrap()
+                .iter()
+                .map(|b| b.id)
+                .collect::<Vec<_>>(),
+            [ids[2]]
+        );
+        store.delete_collection("Current").unwrap();
+        assert!(store.collection("Current").unwrap().is_empty());
+        assert_eq!(
+            store.books(None, false).unwrap().len(),
+            3,
+            "deleting a list never deletes books"
+        );
+        assert_eq!(store.collections().unwrap(), [("Favorites".to_owned(), 1)]);
     }
 
     #[cfg(unix)]

@@ -43,6 +43,8 @@ Window {
     readonly property string chapter: win.kind === "epub" && win.plan
         ? Rules.chapterOf(win.plan.epub.toc, win.index) : ""
     readonly property real percent: Rules.percent(win.kind, win.index, win.fraction, win.items)
+    readonly property string remainingLabel: Rules.remainingLabel(
+        win.kind, win.index, win.fraction, win.items)
 
     // Read the theme, the book and how it was last read, then go where it was left
     Component.onCompleted: {
@@ -242,13 +244,25 @@ Window {
 
         Text {
             anchors { left: parent.left; leftMargin: 14; verticalCenter: parent.verticalCenter }
-            width: parent.width - 28
+            width: parent.width - 340
             elide: Text.ElideRight
             color: win.notice !== "" ? win.theme.accent : win.theme.faint
             font.family: win.theme.fontFamily
             font.pixelSize: win.theme.fontSize - 1
             text: win.notice !== "" ? win.notice
                 : "←/→ turn · t pages or scroll · +/- size · h highlight · n/p chapter · q close"
+        }
+
+        Text {
+            anchors { right: parent.right; rightMargin: 14; verticalCenter: parent.verticalCenter }
+            width: 300
+            elide: Text.ElideRight
+            horizontalAlignment: Text.AlignRight
+            visible: win.plan !== null
+            color: win.theme.faint
+            font.family: win.theme.fontFamily
+            font.pixelSize: win.theme.fontSize - 1
+            text: win.remainingLabel
         }
     }
 

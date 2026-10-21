@@ -15,3 +15,4 @@ pub mod terminal_text;
 pub mod tools;
 pub mod tui;
 pub mod vault;
+pub mod watcher;

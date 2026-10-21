@@ -12,9 +12,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::json;
 
-use mg_bookr::store::{self, Book, Store};
+use mg_bookr::store::{self, Book, BookSort, BookStatus, Store};
 use mg_bookr::terminal_text::sanitize_terminal_text;
-use mg_bookr::{listen, reader, scan, vault};
+use mg_bookr::{listen, reader, scan, vault, watcher};
 
 const DEFAULT_CONTINUE: usize = 12;
 
@@ -35,7 +35,11 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     /// Look through ~/books and ~/audiobooks and record what is there
-    Scan,
+    Scan {
+        /// Re-read metadata even when a stored file fingerprint is unchanged
+        #[arg(long)]
+        force: bool,
+    },
     /// Every book (by kind: epub, pdf, comic, audio)
     List {
         #[arg(long)]
@@ -43,6 +47,28 @@ enum Command {
         /// Include books whose files have gone missing
         #[arg(long)]
         missing: bool,
+        /// Order the library without changing its default recent-first order
+        #[arg(long, value_enum, default_value = "recent")]
+        sort: SortBy,
+        /// Limit results to one global reading status
+        #[arg(long, value_enum)]
+        status: Option<BookStatus>,
+    },
+    /// Find books by title, author, series, or library path
+    Search {
+        text: String,
+        #[arg(long)]
+        kind: Option<String>,
+        /// Include books whose files have gone missing
+        #[arg(long)]
+        missing: bool,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long, value_enum, default_value = "recent")]
+        sort: SortBy,
+        /// Limit results to one global reading status
+        #[arg(long, value_enum)]
+        status: Option<BookStatus>,
     },
     /// Books started and not finished, most recent first
     Continue {
@@ -71,6 +97,17 @@ enum Command {
         #[command(subcommand)]
         action: CollectionAction,
     },
+    /// Read or change global book status
+    Status {
+        #[command(subcommand)]
+        action: StatusAction,
+    },
+    /// Run a recursive filesystem watcher until stopped (JSON lines on stdout)
+    Watch {
+        /// Quiet time before coalesced changes trigger a scan (50–5000 ms)
+        #[arg(long, default_value_t = 500, value_parser = clap::value_parser!(u64).range(50..=5000))]
+        debounce_ms: u64,
+    },
     /// Write a book's highlights into mg-vault as one Markdown note (done after every highlight change too)
     Export { id: i64 },
     /// Open a book in the reader window
@@ -84,6 +121,25 @@ enum Command {
         #[command(subcommand)]
         action: ListenAction,
     },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum SortBy {
+    Recent,
+    Title,
+    Author,
+    Series,
+}
+
+impl From<SortBy> for BookSort {
+    fn from(value: SortBy) -> Self {
+        match value {
+            SortBy::Recent => BookSort::Recent,
+            SortBy::Title => BookSort::Title,
+            SortBy::Author => BookSort::Author,
+            SortBy::Series => BookSort::Series,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -160,15 +216,70 @@ enum HighlightAction {
 
 #[derive(Subcommand)]
 enum CollectionAction {
+    Create {
+        name: String,
+    },
+    Rename {
+        name: String,
+        new_name: String,
+    },
+    Delete {
+        name: String,
+    },
     List,
-    Show { name: String },
-    Add { name: String, book: i64 },
-    Remove { name: String, book: i64 },
+    Show {
+        name: String,
+        #[arg(long, value_enum, default_value = "manual")]
+        sort: CollectionOrder,
+    },
+    Add {
+        name: String,
+        book: i64,
+    },
+    Remove {
+        name: String,
+        book: i64,
+    },
+    AddMany {
+        name: String,
+        books: Vec<i64>,
+    },
+    RemoveMany {
+        name: String,
+        books: Vec<i64>,
+    },
+    Reorder {
+        name: String,
+        book: i64,
+        position: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum StatusAction {
+    Get { book: i64 },
+    Set { book: i64, status: BookStatus },
+    Bulk { status: BookStatus, books: Vec<i64> },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+enum CollectionOrder {
+    Manual,
+    Title,
+}
+
+impl From<CollectionOrder> for store::CollectionSort {
+    fn from(value: CollectionOrder) -> Self {
+        match value {
+            CollectionOrder::Manual => store::CollectionSort::Manual,
+            CollectionOrder::Title => store::CollectionSort::Title,
+        }
+    }
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let json = cli.json;
+    let json = cli.json || matches!(&cli.command, Command::Watch { .. });
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -186,14 +297,19 @@ fn run(cli: Cli) -> Result<()> {
     let json = cli.json;
     let store = Store::open(store::default_path())?;
     match cli.command {
-        Command::Scan => {
-            let report = scan::scan(&store, &scan::default_roots(), &scan::default_cover_dir())?;
+        Command::Scan { force } => {
+            let report = scan::scan_with_force(
+                &store,
+                &scan::default_roots(),
+                &scan::default_cover_dir(),
+                force,
+            )?;
             if json {
                 println!("{}", serde_json::to_string(&report)?);
             } else {
                 println!(
-                    "{} books: {} new, {} missing",
-                    report.found, report.added, report.missing
+                    "{} books: {} new, {} updated, {} unchanged, {} missing",
+                    report.found, report.added, report.updated, report.unchanged, report.missing
                 );
                 for (path, why) in &report.unreadable {
                     println!(
@@ -202,10 +318,36 @@ fn run(cli: Cli) -> Result<()> {
                         sanitize_terminal_text(why)
                     );
                 }
+                for diagnostic in &report.diagnostics {
+                    println!("  incomplete: {}", sanitize_terminal_text(diagnostic));
+                }
             }
         }
-        Command::List { kind, missing } => books(json, &store.books(kind.as_deref(), missing)?)?,
-        Command::Continue { limit } => books(json, &store.in_progress(limit)?)?,
+        Command::List {
+            kind,
+            missing,
+            sort,
+            status,
+        } => books(
+            json,
+            &store,
+            &store.books_sorted(kind.as_deref(), missing, sort.into())?,
+            status,
+        )?,
+        Command::Search {
+            text,
+            kind,
+            missing,
+            limit,
+            sort,
+            status,
+        } => books(
+            json,
+            &store,
+            &store.search_books(&text, kind.as_deref(), missing, sort.into(), limit)?,
+            status,
+        )?,
+        Command::Continue { limit } => books(json, &store, &store.in_progress(limit)?, None)?,
         Command::Show { id } => {
             let book = store.book(id)?;
             let tracks = store.tracks(id)?;
@@ -214,7 +356,7 @@ fn run(cli: Cli) -> Result<()> {
             if json {
                 println!(
                     "{}",
-                    json!({ "book": book, "tracks": tracks, "chapters": chapters, "highlights": highlights })
+                    json!({ "book": store.book_record(id)?, "tracks": tracks, "chapters": chapters, "highlights": highlights })
                 );
             } else {
                 println!("{}", line(&book));
@@ -239,8 +381,11 @@ fn run(cli: Cli) -> Result<()> {
                 &scan::default_roots(),
                 &reader::default_unpack_dir(),
             )?;
+            store.mark_opened(id)?;
             if json {
-                println!("{}", serde_json::to_string(&plan)?);
+                let mut value = serde_json::to_value(&plan)?;
+                value["book"] = serde_json::to_value(store.book_record(id)?)?;
+                println!("{value}");
             } else {
                 println!(
                     "{}  {}",
@@ -277,7 +422,7 @@ fn run(cli: Cli) -> Result<()> {
             store.set_progress(id, &location, percent, flag)?;
             done(
                 json,
-                json!({ "ok": true, "book": store.book(id)? }),
+                json!({ "ok": true, "book": store.book_record(id)? }),
                 format!("saved: {percent:.1}%"),
             );
         }
@@ -340,6 +485,26 @@ fn run(cli: Cli) -> Result<()> {
             }
         },
         Command::Collection { action } => match action {
+            CollectionAction::Create { name } => {
+                let id = store.create_collection(&name)?;
+                done(
+                    json,
+                    json!({ "ok": true, "id": id, "name": name }),
+                    format!("created {name}"),
+                );
+            }
+            CollectionAction::Rename { name, new_name } => {
+                store.rename_collection(&name, &new_name)?;
+                done(
+                    json,
+                    json!({ "ok": true, "name": new_name }),
+                    format!("renamed to {new_name}"),
+                );
+            }
+            CollectionAction::Delete { name } => {
+                store.delete_collection(&name)?;
+                done(json, json!({ "ok": true }), format!("deleted {name}"));
+            }
             CollectionAction::List => {
                 let list = store.collections()?;
                 if json {
@@ -357,8 +522,12 @@ fn run(cli: Cli) -> Result<()> {
                     }
                 }
             }
-            CollectionAction::Show { name } => books(json, &store.collection(&name)?)?,
+            CollectionAction::Show { name, sort } => {
+                let list = store.collection_sorted(&name, sort.into())?;
+                books(json, &store, &list, None)?;
+            }
             CollectionAction::Add { name, book } => {
+                // Keep the legacy add behavior: this single-book command creates a missing list.
                 store.collect(&name, book)?;
                 done(json, json!({ "ok": true }), format!("added to {name}"));
             }
@@ -366,7 +535,72 @@ fn run(cli: Cli) -> Result<()> {
                 store.uncollect(&name, book)?;
                 done(json, json!({ "ok": true }), format!("removed from {name}"));
             }
+            CollectionAction::AddMany { name, books: ids } => {
+                let added = store.add_many_to_collection(&name, &ids)?;
+                done(
+                    json,
+                    json!({ "ok": true, "added": added }),
+                    format!("added {added} books to {name}"),
+                );
+            }
+            CollectionAction::RemoveMany { name, books: ids } => {
+                let removed = store.remove_many_from_collection(&name, &ids)?;
+                done(
+                    json,
+                    json!({ "ok": true, "removed": removed }),
+                    format!("removed {removed} books from {name}"),
+                );
+            }
+            CollectionAction::Reorder {
+                name,
+                book,
+                position,
+            } => {
+                store.reorder_collection(&name, book, position)?;
+                done(
+                    json,
+                    json!({ "ok": true }),
+                    format!("moved book {book} to position {position}"),
+                );
+            }
         },
+        Command::Status { action } => match action {
+            StatusAction::Get { book } => {
+                let status = store.status(book)?;
+                done(
+                    json,
+                    json!({ "ok": true, "status": status, "book": store.book_record(book)? }),
+                    format!("{status}"),
+                );
+            }
+            StatusAction::Set { book, status } => {
+                store.set_status(book, status)?;
+                done(
+                    json,
+                    json!({ "ok": true, "book": store.book_record(book)? }),
+                    format!("set status to {status}"),
+                );
+            }
+            StatusAction::Bulk { status, books: ids } => {
+                let updated = store.set_status_many(&ids, status)?;
+                let selected = ids
+                    .iter()
+                    .map(|id| store.book(*id))
+                    .collect::<Result<Vec<_>>>()?;
+                let records = store.records_for_books(&selected)?;
+                done(
+                    json,
+                    json!({ "ok": true, "updated": updated, "books": records }),
+                    format!("set {updated} books to {status}"),
+                );
+            }
+        },
+        Command::Watch { debounce_ms } => watcher::run(
+            &store,
+            &scan::default_roots(),
+            &scan::default_cover_dir(),
+            std::time::Duration::from_millis(debounce_ms),
+        )?,
         Command::Export { id } => {
             let book = store.book(id)?;
             let (path, outcome) =
@@ -385,9 +619,10 @@ fn run(cli: Cli) -> Result<()> {
         Command::Open { id } => {
             let book = store.book(id)?;
             reader::open(&book)?;
+            store.mark_opened(id)?;
             done(
                 json,
-                json!({ "ok": true, "book": book }),
+                json!({ "ok": true, "book": store.book_record(id)? }),
                 format!("opening {}", book.title),
             );
         }
@@ -539,12 +774,22 @@ fn done(json: bool, value: serde_json::Value, text: String) {
     }
 }
 
-fn books(json: bool, list: &[Book]) -> Result<()> {
+fn books(
+    json: bool,
+    store: &Store,
+    list: &[Book],
+    status_filter: Option<BookStatus>,
+) -> Result<()> {
+    let records = store.records_for_books(list)?;
+    let records = records
+        .into_iter()
+        .filter(|record| status_filter.is_none_or(|status| record.status == status))
+        .collect::<Vec<_>>();
     if json {
-        println!("{}", serde_json::to_string(list)?);
+        println!("{}", serde_json::to_string(&records)?);
     } else {
-        for b in list {
-            println!("{}", line(b));
+        for record in &records {
+            println!("{}", line(&record.book));
         }
     }
     Ok(())
@@ -580,6 +825,84 @@ fn clock(seconds: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_and_search_sort_options_parse_with_the_legacy_default() {
+        let default_list = Cli::try_parse_from(["mg-bookr", "list"]).unwrap();
+        assert!(matches!(
+            default_list.command,
+            Command::List {
+                kind: None,
+                missing: false,
+                sort: SortBy::Recent,
+                status: None
+            }
+        ));
+
+        let search = Cli::try_parse_from([
+            "mg-bookr",
+            "search",
+            "Earthsea",
+            "--kind",
+            "epub",
+            "--missing",
+            "--sort",
+            "series",
+            "--limit",
+            "25",
+        ])
+        .unwrap();
+        assert!(matches!(
+            search.command,
+            Command::Search {
+                text,
+                kind: Some(kind),
+                missing: true,
+                limit: 25,
+                sort: SortBy::Series,
+                status: None
+            } if text == "Earthsea" && kind == "epub"
+        ));
+    }
+
+    #[test]
+    fn authority_commands_parse_manual_title_bulk_status_force_and_watch() {
+        let collection = Cli::try_parse_from([
+            "mg-bookr",
+            "collection",
+            "show",
+            "Reading now",
+            "--sort",
+            "title",
+        ])
+        .unwrap();
+        assert!(matches!(
+            collection.command,
+            Command::Collection {
+                action: CollectionAction::Show {
+                    name,
+                    sort: CollectionOrder::Title
+                }
+            } if name == "Reading now"
+        ));
+
+        let status =
+            Cli::try_parse_from(["mg-bookr", "status", "bulk", "paused", "7", "9"]).unwrap();
+        assert!(matches!(
+            status.command,
+            Command::Status {
+                action: StatusAction::Bulk {
+                    status: BookStatus::Paused,
+                    books
+                }
+            } if books == [7, 9]
+        ));
+
+        let force = Cli::try_parse_from(["mg-bookr", "scan", "--force"]).unwrap();
+        assert!(matches!(force.command, Command::Scan { force: true }));
+        let watch = Cli::try_parse_from(["mg-bookr", "watch", "--debounce-ms", "250"]).unwrap();
+        assert!(matches!(watch.command, Command::Watch { debounce_ms: 250 }));
+    }
 
     #[test]
     fn plain_book_rows_remove_terminal_active_metadata() {

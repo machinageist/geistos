@@ -10,7 +10,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::listen::{MAX_SPEED, MIN_SPEED, Now};
-use crate::store::Book;
+use crate::store::{Book, BookSort, MAX_BOOK_SEARCH_CHARS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
@@ -57,7 +57,7 @@ pub enum Effect {
     None,
     Quit,
     LoadContinue,
-    LoadLibrary,
+    LoadLibrary(BookSort),
     Scan,
     Play(i64),
     Read(i64),
@@ -71,6 +71,9 @@ pub struct State {
     pub library: Vec<Book>,
     // index into KIND_FILTERS
     pub kind: usize,
+    pub query: String,
+    pub searching: bool,
+    pub sort: BookSort,
     pub now: Option<Now>,
     // when `now` was read, unix ms
     pub now_at: i64,
@@ -109,7 +112,9 @@ impl State {
         let kind = KIND_FILTERS[self.kind];
         self.library
             .iter()
-            .filter(|b| kind.is_empty() || b.kind.starts_with(kind))
+            .filter(|book| {
+                (kind.is_empty() || book.kind.starts_with(kind)) && book.matches_text(&self.query)
+            })
             .collect()
     }
 
@@ -144,7 +149,7 @@ impl State {
         self.tab = tab;
         match tab {
             Tab::Continue => Effect::LoadContinue,
-            Tab::Library => Effect::LoadLibrary,
+            Tab::Library => Effect::LoadLibrary(self.sort),
             Tab::Listening => Effect::None,
         }
     }
@@ -179,6 +184,38 @@ impl State {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Effect::Quit;
         }
+        if self.searching {
+            match key.code {
+                KeyCode::Enter => {
+                    self.searching = false;
+                    self.cursor[Tab::Library.index()] = 0;
+                }
+                KeyCode::Esc => {
+                    self.query.clear();
+                    self.searching = false;
+                    self.cursor[Tab::Library.index()] = 0;
+                }
+                KeyCode::Backspace => {
+                    self.query.pop();
+                    self.cursor[Tab::Library.index()] = 0;
+                }
+                KeyCode::Char(c)
+                    if !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && !key.modifiers.contains(KeyModifiers::ALT) =>
+                {
+                    if self.query.chars().count() < MAX_BOOK_SEARCH_CHARS {
+                        self.query.push(c);
+                        self.cursor[Tab::Library.index()] = 0;
+                    } else {
+                        self.message = Some(format!(
+                            "search limit is {MAX_BOOK_SEARCH_CHARS} characters"
+                        ));
+                    }
+                }
+                _ => {}
+            }
+            return Effect::None;
+        }
         let listen = |c| Effect::Listen(c);
         match key.code {
             KeyCode::Char('q') => return Effect::Quit,
@@ -203,6 +240,20 @@ impl State {
             }
             KeyCode::Char('z') => return listen(Control::Sleep(self.next_sleep())),
             KeyCode::Char('x') => return listen(Control::Stop),
+            KeyCode::Char('o') if self.tab == Tab::Library => {
+                self.sort = match self.sort {
+                    BookSort::Recent => BookSort::Title,
+                    BookSort::Title => BookSort::Author,
+                    BookSort::Author => BookSort::Series,
+                    BookSort::Series => BookSort::Recent,
+                };
+                self.cursor[Tab::Library.index()] = 0;
+                return Effect::LoadLibrary(self.sort);
+            }
+            KeyCode::Char('/') if self.tab == Tab::Library => {
+                self.searching = true;
+                self.cursor[Tab::Library.index()] = 0;
+            }
             KeyCode::Char('s') => return Effect::Scan,
             KeyCode::Down | KeyCode::Char('j') => self.step(1),
             KeyCode::Up | KeyCode::Char('k') => self.step(-1),
@@ -323,6 +374,79 @@ pub mod tests {
     }
 
     #[test]
+    fn library_search_filters_existing_metadata_and_escape_clears_it() {
+        let mut le_guin = book(1, "epub");
+        le_guin.title = "The Left Hand of Darkness".into();
+        le_guin.author = Some("Ursula K. Le Guin".into());
+        le_guin.path = "science-fiction/left-hand.epub".into();
+        let mut lewis = book(2, "epub");
+        lewis.title = "The Lion, the Witch and the Wardrobe".into();
+        lewis.author = Some("C. S. Lewis".into());
+        lewis.path = "fantasy/wardrobe.epub".into();
+        let mut s = State {
+            tab: Tab::Library,
+            library: vec![le_guin, lewis],
+            ..Default::default()
+        };
+
+        assert_eq!(s.key(key(KeyCode::Char('/'))), Effect::None);
+        assert!(s.searching);
+        for c in "LE GUIN".chars() {
+            s.key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(
+            s.shown().iter().map(|book| book.id).collect::<Vec<_>>(),
+            [1]
+        );
+        assert_eq!(s.key(key(KeyCode::Enter)), Effect::None);
+        assert!(!s.searching);
+        assert_eq!(s.query, "LE GUIN");
+
+        s.key(key(KeyCode::Char('/')));
+        s.key(key(KeyCode::Esc));
+        assert!(s.query.is_empty());
+        assert_eq!(s.shown().len(), 2);
+
+        let mut capped = State {
+            tab: Tab::Library,
+            searching: true,
+            query: "x".repeat(MAX_BOOK_SEARCH_CHARS),
+            ..Default::default()
+        };
+        capped.key(key(KeyCode::Char('y')));
+        assert_eq!(capped.query.chars().count(), MAX_BOOK_SEARCH_CHARS);
+        assert_eq!(
+            capped.message.as_deref(),
+            Some("search limit is 200 characters")
+        );
+    }
+
+    #[test]
+    fn library_order_cycles_without_reassigning_the_rescan_key() {
+        let mut s = State {
+            tab: Tab::Library,
+            ..Default::default()
+        };
+        assert_eq!(
+            s.key(key(KeyCode::Char('o'))),
+            Effect::LoadLibrary(BookSort::Title)
+        );
+        assert_eq!(
+            s.key(key(KeyCode::Char('o'))),
+            Effect::LoadLibrary(BookSort::Author)
+        );
+        assert_eq!(
+            s.key(key(KeyCode::Char('o'))),
+            Effect::LoadLibrary(BookSort::Series)
+        );
+        assert_eq!(
+            s.key(key(KeyCode::Char('o'))),
+            Effect::LoadLibrary(BookSort::Recent)
+        );
+        assert_eq!(s.key(key(KeyCode::Char('s'))), Effect::Scan);
+    }
+
+    #[test]
     fn speed_steps_by_a_quarter_inside_its_range() {
         let mut s = State::default();
         assert_eq!(s.key(key(KeyCode::Char(']'))), Effect::None);
@@ -365,7 +489,10 @@ pub mod tests {
     #[test]
     fn tabs_load_their_lists_and_listening_keys_work_everywhere() {
         let mut s = State::default();
-        assert_eq!(s.key(key(KeyCode::Char('2'))), Effect::LoadLibrary);
+        assert_eq!(
+            s.key(key(KeyCode::Char('2'))),
+            Effect::LoadLibrary(BookSort::Recent)
+        );
         assert_eq!(s.key(key(KeyCode::Tab)), Effect::None);
         assert_eq!(s.tab, Tab::Listening);
         assert_eq!(s.key(key(KeyCode::Tab)), Effect::LoadContinue);

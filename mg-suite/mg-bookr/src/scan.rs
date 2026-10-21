@@ -16,7 +16,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::meta::{self, Meta};
-use crate::store::{Found, Store};
+use crate::store::{Found, ScanMetadata, ScanRecord, Store};
 use crate::terminal_text::sanitize_terminal_text;
 
 pub const BOOKS: &str = "books";
@@ -56,75 +56,247 @@ pub fn default_cover_dir() -> PathBuf {
 pub struct Report {
     pub found: usize,
     pub added: usize,
+    pub updated: usize,
+    pub unchanged: usize,
     pub missing: usize,
-    // books whose metadata could not be read (recorded anyway): (path, why)
+    pub forced: bool,
     pub unreadable: Vec<(String, String)>,
+    pub incomplete_roots: Vec<String>,
+    pub diagnostics: Vec<String>,
 }
 
-// One candidate: (kind, path inside the root)
-fn walk(root: &Path, audio: bool) -> Vec<(String, String)> {
-    let mut out = Vec::new();
+#[derive(Debug)]
+struct Candidate {
+    kind: String,
+    relative_path: String,
+    fingerprint: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct WalkResult {
+    candidates: Vec<Candidate>,
+    diagnostics: Vec<String>,
+    complete: bool,
+}
+
+fn file_stat(path: &Path) -> std::io::Result<String> {
+    let metadata = std::fs::metadata(path)?;
+    let modified = metadata
+        .modified()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(std::io::Error::other)?;
+    Ok(format!(
+        "{}:{}:{}",
+        metadata.len(),
+        modified.as_secs(),
+        modified.subsec_nanos()
+    ))
+}
+
+fn fingerprint(root: &str, relative_path: &str, stat: &str) -> String {
+    Sha256::digest(format!("{root}\0{relative_path}\0{stat}").as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn folder_fingerprint(root: &str, relative_path: &str, members: &[(String, String)]) -> String {
+    let mut members = members.to_vec();
+    members.sort();
+    let mut digest = Sha256::new();
+    digest.update(root.as_bytes());
+    digest.update([0]);
+    digest.update(relative_path.as_bytes());
+    for (member, stat) in members {
+        digest.update([0]);
+        digest.update(member.as_bytes());
+        digest.update([0]);
+        digest.update(stat.as_bytes());
+    }
+    digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+// Walk without following symlinks. Any traversal/stat error makes reconciliation unsafe.
+fn walk(root: &Path, logical_root: &str, audio: bool) -> WalkResult {
+    let mut result = WalkResult {
+        complete: true,
+        ..WalkResult::default()
+    };
     let mut stack = vec![(root.to_path_buf(), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
+        let dir_relative = dir
+            .strip_prefix(root)
+            .ok()
+            .and_then(Path::to_str)
+            .unwrap_or("");
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                result.complete = false;
+                result.diagnostics.push(format!(
+                    "{}: cannot enumerate directory: {error}",
+                    if dir_relative.is_empty() {
+                        logical_root
+                    } else {
+                        dir_relative
+                    }
+                ));
+                continue;
+            }
         };
         let mut subdirs = Vec::new();
         let mut folder_audio = false;
-        for entry in entries.flatten() {
-            // file_type does not follow symlinks: a link is neither a file nor a folder here
-            let Ok(kind) = entry.file_type() else {
-                continue;
+        let mut folder_members = Vec::new();
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    result.complete = false;
+                    result.diagnostics.push(format!(
+                        "{}: directory entry could not be read: {error}",
+                        if dir_relative.is_empty() {
+                            logical_root
+                        } else {
+                            dir_relative
+                        }
+                    ));
+                    continue;
+                }
             };
-            let Ok(name) = entry.file_name().into_string() else {
+            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+                result.complete = false;
+                result.diagnostics.push(format!(
+                    "{}: non-UTF-8 entry name was skipped",
+                    if dir_relative.is_empty() {
+                        logical_root
+                    } else {
+                        dir_relative
+                    }
+                ));
                 continue;
             };
             if name.starts_with('.') {
                 continue;
             }
             let path = entry.path();
-            let rel = || {
-                path.strip_prefix(root)
-                    .ok()
-                    .and_then(|p| p.to_str())
-                    .map(str::to_string)
+            let kind = match entry.file_type() {
+                Ok(kind) => kind,
+                Err(error) => {
+                    result.complete = false;
+                    result.diagnostics.push(format!(
+                        "{}: file type could not be read: {error}",
+                        path.display()
+                    ));
+                    continue;
+                }
             };
-            let ext = meta::extension(&name);
+            let relative_path = path
+                .strip_prefix(root)
+                .ok()
+                .and_then(Path::to_str)
+                .map(str::to_owned);
+            let Some(relative_path) = relative_path else {
+                result.complete = false;
+                result
+                    .diagnostics
+                    .push(format!("{}: relative path is not UTF-8", path.display()));
+                continue;
+            };
+            let extension = meta::extension(&name);
             if kind.is_dir() {
-                subdirs.push(path.clone());
-            } else if kind.is_file() && !audio && EBOOK_EXTENSIONS.contains(&ext.as_str()) {
-                let book_kind = match ext.as_str() {
+                subdirs.push(path);
+            } else if kind.is_file() && !audio && EBOOK_EXTENSIONS.contains(&extension.as_str()) {
+                let book_kind = match extension.as_str() {
                     "cbz" | "cbr" => "comic",
                     other => other,
                 };
-                if let Some(rel) = rel() {
-                    out.push((book_kind.to_string(), rel));
+                let fingerprint = match file_stat(&path) {
+                    Ok(stat) => Some(fingerprint(logical_root, &relative_path, &stat)),
+                    Err(error) => {
+                        result.complete = false;
+                        result.diagnostics.push(format!(
+                            "{logical_root}/{relative_path}: stat failed: {error}"
+                        ));
+                        None
+                    }
+                };
+                result.candidates.push(Candidate {
+                    kind: book_kind.to_string(),
+                    relative_path,
+                    fingerprint,
+                });
+            } else if kind.is_file() && audio {
+                if BOOK_AUDIO.contains(&extension.as_str()) {
+                    let file_fingerprint = match file_stat(&path) {
+                        Ok(stat) => Some(fingerprint(logical_root, &relative_path, &stat)),
+                        Err(error) => {
+                            result.complete = false;
+                            result.diagnostics.push(format!(
+                                "{logical_root}/{relative_path}: stat failed: {error}"
+                            ));
+                            None
+                        }
+                    };
+                    result.candidates.push(Candidate {
+                        kind: "audio".into(),
+                        relative_path: relative_path.clone(),
+                        fingerprint: file_fingerprint,
+                    });
+                } else if meta::AUDIO_EXTENSIONS.contains(&extension.as_str()) {
+                    folder_audio = true;
                 }
-            } else if kind.is_file() && audio && BOOK_AUDIO.contains(&ext.as_str()) {
-                if let Some(rel) = rel() {
-                    out.push(("audio".to_string(), rel));
+                let is_cover = [
+                    "cover.jpg",
+                    "cover.png",
+                    "folder.jpg",
+                    "folder.png",
+                    "front.jpg",
+                ]
+                .contains(&name.to_ascii_lowercase().as_str());
+                if meta::AUDIO_EXTENSIONS.contains(&extension.as_str()) || is_cover {
+                    match file_stat(&path) {
+                        Ok(stat) => folder_members.push((name, stat)),
+                        Err(error) => {
+                            result.complete = false;
+                            result.diagnostics.push(format!(
+                                "{logical_root}/{relative_path}: stat failed: {error}"
+                            ));
+                            folder_members.push((name, "unavailable".into()));
+                        }
+                    }
                 }
-            } else if kind.is_file() && audio && meta::AUDIO_EXTENSIONS.contains(&ext.as_str()) {
-                folder_audio = true;
             }
         }
-        // a folder of audio files is one book, and nothing below it is looked at
-        if folder_audio
-            && let Some(rel) = dir
-                .strip_prefix(root)
-                .ok()
-                .and_then(|p| p.to_str())
-                .filter(|r| !r.is_empty())
-        {
-            out.push(("audio-folder".to_string(), rel.to_string()));
+        // Folder audiobooks use direct member paths/stat data in their deterministic fingerprint.
+        if folder_audio && !dir_relative.is_empty() {
+            let member_stat_ok = folder_members.iter().all(|(_, stat)| stat != "unavailable");
+            result.candidates.push(Candidate {
+                kind: "audio-folder".into(),
+                relative_path: dir_relative.to_owned(),
+                fingerprint: member_stat_ok
+                    .then(|| folder_fingerprint(logical_root, dir_relative, &folder_members)),
+            });
             continue;
         }
+        subdirs.sort();
         if depth < MAX_DEPTH {
-            stack.extend(subdirs.into_iter().map(|d| (d, depth + 1)));
+            stack.extend(subdirs.into_iter().map(|subdir| (subdir, depth + 1)));
+        } else if !subdirs.is_empty() {
+            result.complete = false;
+            result.diagnostics.push(format!(
+                "{logical_root}/{}: traversal depth limit {MAX_DEPTH} reached",
+                dir_relative
+            ));
         }
     }
-    out.sort();
-    out
+    result.candidates.sort_by(|left, right| {
+        (&left.kind, &left.relative_path).cmp(&(&right.kind, &right.relative_path))
+    });
+    result
 }
 
 // Where a book's cover goes: a key from its place, size and change time
@@ -181,57 +353,136 @@ fn store_cover(kind: &str, path: &Path, meta: &mut Meta, dir: &Path, key: &str) 
     None
 }
 
-// Walk both roots, read each book, and record the lot; a root that does not exist yet is skipped
+// Walk both roots and reconcile only those whose traversal completed successfully.
 pub fn scan(store: &Store, roots: &Roots, cover_dir: &Path) -> Result<Report> {
-    let mut report = Report::default();
-    let mut found = Vec::new();
-    let mut scanned = Vec::new();
+    scan_with_force(store, roots, cover_dir, false)
+}
+
+pub fn scan_with_force(
+    store: &Store,
+    roots: &Roots,
+    cover_dir: &Path,
+    force: bool,
+) -> Result<Report> {
+    let mut report = Report {
+        forced: force,
+        ..Report::default()
+    };
+    let mut records = Vec::new();
+    let mut complete_roots = Vec::new();
     for (root_name, root, audio) in [
         (BOOKS, &roots.books, false),
         (AUDIOBOOKS, &roots.audiobooks, true),
     ] {
-        if !root.is_dir() {
-            continue;
+        let walked = walk(root, root_name, audio);
+        let fingerprints = store.scan_fingerprints(root_name)?;
+        if walked.complete {
+            complete_roots.push(root_name.to_string());
+        } else {
+            report.incomplete_roots.push(format!(
+                "{root_name}: {}",
+                walked
+                    .diagnostics
+                    .first()
+                    .map_or("traversal was incomplete", String::as_str)
+            ));
         }
-        scanned.push(root_name);
-        for (kind, rel) in walk(root, audio) {
-            let path = root.join(&rel);
-            let mut meta = read(&kind, &path).unwrap_or_else(|e| {
-                report
-                    .unreadable
-                    .push((format!("{root_name}/{rel}"), format!("{e:#}")));
-                Meta::default()
-            });
-            let key = cover_key(root_name, &rel, &path);
-            let cover = store_cover(&kind, &path, &mut meta, cover_dir, &key);
-            let title = meta
-                .title
-                .clone()
-                .unwrap_or_else(|| meta::title_from_name(&rel));
-            found.push(Found {
-                kind,
+        report.diagnostics.extend(
+            walked
+                .diagnostics
+                .iter()
+                .map(|diagnostic| format!("{root_name}: {diagnostic}")),
+        );
+        report.found += walked.candidates.len();
+
+        for candidate in walked.candidates {
+            let Some(candidate_fingerprint) = candidate.fingerprint else {
+                continue;
+            };
+            if !force
+                && fingerprints
+                    .get(&candidate.relative_path)
+                    .is_some_and(|saved| saved == &candidate_fingerprint)
+            {
+                records.push(ScanRecord {
+                    root: root_name.to_string(),
+                    path: candidate.relative_path,
+                    fingerprint: candidate_fingerprint,
+                    metadata: ScanMetadata::Unchanged,
+                });
+                continue;
+            }
+
+            let path = root.join(&candidate.relative_path);
+            let metadata = match read(&candidate.kind, &path) {
+                Ok(mut metadata) => {
+                    let key = if candidate.kind == "audio-folder" {
+                        Sha256::digest(candidate_fingerprint.as_bytes())
+                            .iter()
+                            .take(16)
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect()
+                    } else {
+                        cover_key(root_name, &candidate.relative_path, &path)
+                    };
+                    let cover = store_cover(&candidate.kind, &path, &mut metadata, cover_dir, &key);
+                    let title = metadata
+                        .title
+                        .clone()
+                        .unwrap_or_else(|| meta::title_from_name(&candidate.relative_path));
+                    let found = Found {
+                        kind: candidate.kind,
+                        root: root_name.to_string(),
+                        title: sanitize_terminal_text(&title),
+                        path: candidate.relative_path.clone(),
+                        author: metadata.author.as_deref().map(sanitize_terminal_text),
+                        series: metadata.series.as_deref().map(sanitize_terminal_text),
+                        series_index: metadata.series_index,
+                        cover,
+                        pages: metadata.pages,
+                        duration_seconds: metadata.duration_seconds,
+                        tracks: metadata.tracks,
+                        chapters: metadata
+                            .chapters
+                            .into_iter()
+                            .map(|(title, start)| (sanitize_terminal_text(&title), start))
+                            .collect(),
+                    };
+                    ScanMetadata::Parsed(found)
+                }
+                Err(error) => {
+                    let message = format!("{error:#}");
+                    report.unreadable.push((
+                        format!("{root_name}/{}", candidate.relative_path),
+                        message.clone(),
+                    ));
+                    ScanMetadata::Failed {
+                        fallback: Found {
+                            kind: candidate.kind,
+                            root: root_name.to_string(),
+                            title: sanitize_terminal_text(&meta::title_from_name(
+                                &candidate.relative_path,
+                            )),
+                            path: candidate.relative_path.clone(),
+                            ..Found::default()
+                        },
+                        error: message,
+                    }
+                }
+            };
+            records.push(ScanRecord {
                 root: root_name.to_string(),
-                title: sanitize_terminal_text(&title),
-                path: rel,
-                author: meta.author.as_deref().map(sanitize_terminal_text),
-                series: meta.series.as_deref().map(sanitize_terminal_text),
-                series_index: meta.series_index,
-                cover,
-                pages: meta.pages,
-                duration_seconds: meta.duration_seconds,
-                tracks: meta.tracks,
-                chapters: meta
-                    .chapters
-                    .into_iter()
-                    .map(|(title, start)| (sanitize_terminal_text(&title), start))
-                    .collect(),
+                path: candidate.relative_path,
+                fingerprint: candidate_fingerprint,
+                metadata,
             });
         }
     }
-    report.found = found.len();
-    let (added, missing) = store.save_scan(&scanned, &found)?;
-    report.added = added;
-    report.missing = missing;
+    let saved = store.save_incremental_scan(&complete_roots, &records)?;
+    report.added = saved.added;
+    report.updated = saved.updated;
+    report.unchanged = saved.unchanged;
+    report.missing = saved.missing;
     Ok(report)
 }
 
@@ -316,6 +567,159 @@ mod tests {
         std::fs::remove_file(books.join("saga-01.cbz")).unwrap();
         assert_eq!(scan(&store, &roots, &covers).unwrap().missing, 1);
         assert_eq!(store.books(None, true).unwrap().len(), 5);
+    }
+
+    #[test]
+    fn unchanged_fingerprint_skips_parse_and_force_retries_without_erasing_history() {
+        use std::fs::{File, FileTimes};
+
+        let dir = tempfile::tempdir().unwrap();
+        let books = dir.path().join("books");
+        let audio = dir.path().join("audiobooks");
+        std::fs::create_dir_all(&books).unwrap();
+        std::fs::create_dir_all(&audio).unwrap();
+        let book_path = books.join("a.epub");
+        write_epub(&book_path, false);
+        let roots = Roots {
+            books,
+            audiobooks: audio,
+        };
+        let store = Store::open(dir.path().join("b.sqlite")).unwrap();
+        let covers = dir.path().join("covers");
+
+        let initial = scan(&store, &roots, &covers).unwrap();
+        assert_eq!(
+            (initial.added, initial.updated, initial.unchanged),
+            (1, 0, 0)
+        );
+        let id = store.books(None, false).unwrap()[0].id;
+        store
+            .set_progress(id, "spine:0.5", 47.0, Some(false))
+            .unwrap();
+        store
+            .set_status(id, crate::store::BookStatus::Paused)
+            .unwrap();
+        store
+            .add_highlight(id, "spine:0.5", None, "kept", None, "yellow")
+            .unwrap();
+        store.create_collection("Saved").unwrap();
+        store.add_to_collection("Saved", id).unwrap();
+
+        // Make the archive unreadable while keeping the exact stat fingerprint.
+        let modified = std::fs::metadata(&book_path).unwrap().modified().unwrap();
+        let size = std::fs::metadata(&book_path).unwrap().len() as usize;
+        std::fs::write(&book_path, vec![0_u8; size]).unwrap();
+        File::options()
+            .write(true)
+            .open(&book_path)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(modified))
+            .unwrap();
+        let unchanged = scan(&store, &roots, &covers).unwrap();
+        assert_eq!((unchanged.unchanged, unchanged.unreadable.len()), (1, 0));
+        assert_eq!(store.book(id).unwrap().title, "The Left Hand of Darkness");
+
+        // A force scan parses the same fingerprint, diagnoses the failure, and keeps prior data.
+        let forced_bad = scan_with_force(&store, &roots, &covers, true).unwrap();
+        assert_eq!((forced_bad.forced, forced_bad.unreadable.len()), (true, 1));
+        assert_eq!(store.book(id).unwrap().title, "The Left Hand of Darkness");
+        assert_eq!(
+            store.book(id).unwrap().location.as_deref(),
+            Some("spine:0.5")
+        );
+        assert_eq!(store.status(id).unwrap(), crate::store::BookStatus::Paused);
+        assert_eq!(store.highlights(id).unwrap()[0].quote, "kept");
+        assert_eq!(store.collection("Saved").unwrap()[0].id, id);
+
+        // Repair with a valid changed archive at the same path; history remains attached to id.
+        write_epub(&book_path, true);
+        let changed = scan(&store, &roots, &covers).unwrap();
+        assert_eq!(changed.updated, 1);
+        assert_eq!(store.books(None, false).unwrap()[0].id, id);
+        assert_eq!(
+            store.book(id).unwrap().location.as_deref(),
+            Some("spine:0.5")
+        );
+        assert_eq!(store.status(id).unwrap(), crate::store::BookStatus::Paused);
+        assert_eq!(store.highlights(id).unwrap()[0].quote, "kept");
+        assert_eq!(store.collection("Saved").unwrap()[0].id, id);
+        let forced_valid = scan_with_force(&store, &roots, &covers, true).unwrap();
+        assert_eq!((forced_valid.updated, forced_valid.unchanged), (1, 0));
+    }
+
+    #[test]
+    fn folder_audiobook_fingerprint_changes_when_a_member_is_added() {
+        let dir = tempfile::tempdir().unwrap();
+        let books = dir.path().join("books");
+        let audio = dir.path().join("audiobooks/Dune");
+        std::fs::create_dir_all(&books).unwrap();
+        std::fs::create_dir_all(&audio).unwrap();
+        std::fs::write(audio.join("01.mp3"), b"one").unwrap();
+        let roots = Roots {
+            books,
+            audiobooks: dir.path().join("audiobooks"),
+        };
+        let store = Store::open(dir.path().join("b.sqlite")).unwrap();
+        let covers = dir.path().join("covers");
+
+        let first = scan(&store, &roots, &covers).unwrap();
+        assert_eq!(first.added, 1);
+        let book = store.books(None, false).unwrap().remove(0);
+        assert_eq!(book.kind, "audio-folder");
+        assert_eq!(store.tracks(book.id).unwrap().len(), 1);
+        assert_eq!(scan(&store, &roots, &covers).unwrap().unchanged, 1);
+
+        std::fs::write(audio.join("02.mp3"), b"two").unwrap();
+        let changed = scan(&store, &roots, &covers).unwrap();
+        assert_eq!(changed.updated, 1);
+        assert_eq!(store.books(None, false).unwrap()[0].id, book.id);
+        assert_eq!(store.tracks(book.id).unwrap().len(), 2);
+
+        std::fs::write(audio.join("01.mp3"), b"one changed size").unwrap();
+        let changed_member = scan(&store, &roots, &covers).unwrap();
+        assert_eq!(changed_member.updated, 1);
+        assert_eq!(store.books(None, false).unwrap()[0].id, book.id);
+        assert_eq!(store.tracks(book.id).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn missing_and_incomplete_roots_never_reconcile_old_books_as_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let books = dir.path().join("books");
+        let audio = dir.path().join("audiobooks");
+        std::fs::create_dir_all(&books).unwrap();
+        std::fs::create_dir_all(&audio).unwrap();
+        write_epub(&books.join("known.epub"), false);
+        let store = Store::open(dir.path().join("b.sqlite")).unwrap();
+        let covers = dir.path().join("covers");
+        let roots = Roots {
+            books: books.clone(),
+            audiobooks: audio,
+        };
+        scan(&store, &roots, &covers).unwrap();
+        let id = store.books(None, false).unwrap()[0].id;
+
+        std::fs::remove_dir_all(&books).unwrap();
+        let missing_root = scan(&store, &roots, &covers).unwrap();
+        assert_eq!(missing_root.missing, 0);
+        assert!(!missing_root.incomplete_roots.is_empty());
+        assert!(!store.book(id).unwrap().missing);
+
+        std::fs::create_dir_all(&books).unwrap();
+        let mut deep = books.clone();
+        for index in 0..=MAX_DEPTH {
+            deep.push(format!("d{index}"));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        let incomplete = scan(&store, &roots, &covers).unwrap();
+        assert_eq!(incomplete.missing, 0);
+        assert!(
+            incomplete
+                .diagnostics
+                .iter()
+                .any(|line| line.contains("depth limit"))
+        );
+        assert!(!store.book(id).unwrap().missing);
     }
 
     #[test]

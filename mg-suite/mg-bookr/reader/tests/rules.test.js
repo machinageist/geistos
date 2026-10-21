@@ -30,6 +30,27 @@ test('locations and percentages match what the store keeps', () => {
     assert.equal(R.percent('epub', 0, 0, 0), 0, 'an empty book is not a division by zero');
 });
 
+test('PDF and comic status labels show the current page and pages after it', () => {
+    for (const kind of ['pdf', 'comic']) {
+        assert.equal(R.remainingLabel(kind, 0, 0, 10), 'Page 1 of 10 · 9 pages left');
+        assert.equal(R.remainingLabel(kind, 4, 0, 10), 'Page 5 of 10 · 5 pages left');
+        assert.equal(R.remainingLabel(kind, 9, 0, 10), 'Page 10 of 10 · 0 pages left');
+    }
+});
+
+test('EPUB status labels show the current section and whole-book percentage', () => {
+    assert.equal(R.remainingLabel('epub', 0, 0, 4), 'Section 1 of 4 · 0%');
+    assert.equal(R.remainingLabel('epub', 1, 0.5, 4), 'Section 2 of 4 · 38%');
+    assert.equal(R.remainingLabel('epub', 3, 1, 4), 'Section 4 of 4 · 100%');
+});
+
+test('status labels stay defined for empty or malformed item counts', () => {
+    assert.equal(R.remainingLabel('pdf', 0, 0, 0), 'Page unavailable · pages remaining unavailable');
+    assert.equal(R.remainingLabel('comic', 0, 0, 'many'), 'Page unavailable · pages remaining unavailable');
+    assert.equal(R.remainingLabel('epub', 0, 0, 0), 'Section unavailable · progress unavailable');
+    assert.equal(R.remainingLabel('epub', 0, 0, 'many'), 'Section unavailable · progress unavailable');
+});
+
 test('the chapter is the last table-of-contents entry at or before the page', () => {
     const toc = [
         { title: 'Cover', spine: 0 },

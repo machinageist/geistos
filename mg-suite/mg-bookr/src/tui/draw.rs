@@ -51,11 +51,15 @@ pub fn draw(frame: &mut Frame, state: &State, now_ms: i64) {
         ),
         Tab::Library => {
             let kind = KIND_FILTERS[state.kind];
-            let title = if kind.is_empty() {
-                " library ".to_string()
-            } else {
-                format!(" library \u{b7} {kind} ")
-            };
+            let mut title = format!(" library · {}", state.sort.label());
+            if !kind.is_empty() {
+                title.push_str(&format!(" · {kind}"));
+            }
+            if !state.query.is_empty() {
+                title.push_str(" · /");
+                title.push_str(&state.query);
+            }
+            title.push(' ');
             let rows = state.shown().into_iter().map(book_line).collect();
             draw_list(frame, body, &title, rows, state.cursor())
         }
@@ -63,8 +67,12 @@ pub fn draw(frame: &mut Frame, state: &State, now_ms: i64) {
     }
     let keys = match state.tab {
         _ if state.message.is_some() => state.message.clone().unwrap_or_default(),
-        Tab::Listening => "space play/pause \u{b7} \u{2190}/\u{2192} 15s \u{b7} n/p chapter \u{b7} [/] speed \u{b7} z sleep \u{b7} x stop \u{b7} q quit".into(),
-        _ => "enter play/read \u{b7} f kind \u{b7} s rescan \u{b7} space play/pause \u{b7} z sleep \u{b7} tab/1-3 \u{b7} q quit".into(),
+        Tab::Library if state.searching => {
+            "type to filter · enter done · backspace edit · esc clear · Ctrl-C quits".into()
+        }
+        Tab::Listening => "space play/pause · ←/→ 15s · n/p chapter · [/] speed · z sleep · x stop · q quit".into(),
+        Tab::Library => "enter play/read · f kind · o order · / search · s rescan · space play/pause · z sleep · q quit".into(),
+        Tab::Continue => "enter play/read · space play/pause · z sleep · tab/1-3 · q quit".into(),
     };
     frame.render_widget(
         Paragraph::new(sanitize_terminal_text(&keys)).fg(DIM),
@@ -91,6 +99,12 @@ fn book_line(book: &Book) -> Line<'static> {
         spans.push(Span::styled(
             format!(" — {}", sanitize_terminal_text(author)),
             Style::new().fg(ACCENT),
+        ));
+    }
+    if let Some(series) = &book.series {
+        spans.push(Span::styled(
+            format!(" · {}", sanitize_terminal_text(series)),
+            Style::new().fg(DIM),
         ));
     }
     spans.push(Span::styled(percent, Style::new().fg(DIM)));
@@ -221,6 +235,29 @@ mod tests {
         let esc = char::from_u32(27).expect("ESC");
         let bel = char::from_u32(7).expect("BEL");
         format!("unsafe{esc}]8;;https://evil.test{bel}{esc}[2J")
+    }
+
+    #[test]
+    fn library_view_shows_sort_search_and_input_state() {
+        let mut first = book(1, "epub");
+        first.series = Some("Earthsea".into());
+        let state = State {
+            tab: Tab::Library,
+            library: vec![first, book(2, "pdf")],
+            query: "Book 1".into(),
+            searching: true,
+            sort: crate::store::BookSort::Author,
+            ..Default::default()
+        };
+        let text = screen(&state, 80, 12);
+        assert!(text.contains("library"));
+        assert!(text.contains("author"));
+        assert!(text.contains("/Book 1"));
+        assert!(text.contains("type to filter"));
+        assert!(text.contains("Ctrl-C quits") && !text.contains("q quit"));
+        assert!(text.contains("Book 1") && !text.contains("Book 2"));
+        assert!(text.contains("Earthsea"));
+        screen(&state, 12, 3);
     }
 
     #[test]

@@ -44,6 +44,29 @@ function percent(kind, index, fraction, items) {
     return Math.max(0, Math.min(100, done / whole * 100));
 }
 
+// A stable, format-aware footer label. Reflowable books have sections, not physical pages.
+function remainingLabel(kind, index, fraction, items) {
+    var total = Number(items);
+    var validTotal = isFinite(total) && total >= 1 && Math.floor(total) === total;
+    if (kind !== "epub" && kind !== "pdf" && kind !== "comic") return "Progress unavailable";
+    if (!validTotal) {
+        return kind === "epub"
+            ? "Section unavailable · progress unavailable"
+            : "Page unavailable · pages remaining unavailable";
+    }
+    var at = Number(index);
+    if (!isFinite(at)) at = 0;
+    at = Math.max(0, Math.min(total - 1, Math.floor(at)));
+    if (kind === "epub") {
+        var part = Number(fraction);
+        if (!isFinite(part)) part = 0;
+        part = Math.max(0, Math.min(1, part));
+        return "Section " + (at + 1) + " of " + total + " · " +
+            Math.round(percent("epub", at, part, total)) + "%";
+    }
+    return "Page " + (at + 1) + " of " + total + " · " + (total - at - 1) + " pages left";
+}
+
 // The chapter a spine item belongs to: the last entry at or before it
 function chapterOf(toc, index) {
     var title = "";

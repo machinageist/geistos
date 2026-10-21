@@ -13,7 +13,8 @@ as a Markdown note per book.
 
 ```sh
 mg-bookr scan                              # look through both folders and record what is there
-mg-bookr list [--kind epub|pdf|comic|audio] [--missing]
+mg-bookr list [--kind epub|pdf|comic|audio] [--missing] [--sort recent|title|author|series]
+mg-bookr search <text> [--kind …] [--missing] [--sort …] [--limit N]
 mg-bookr continue [--limit 12]             # started and unfinished, most recent first
 mg-bookr show <id>                         # tracks, chapters and highlights
 mg-bookr read <id>                         # everything the reader needs (unpacks EPUBs, comics)
@@ -32,6 +33,18 @@ mg-bookr tui                               # Continue, Library, Listening
 ```
 
 `--json` works everywhere, and failures print `{"ok":false,"error":…}` with exit 1.
+
+`search` matches text in title, author, series, or library path (case-insensitively), then applies
+an optional kind/missing filter and sort. Search text is 1–200 characters; `--limit` defaults to
+100 and is clamped to 1–1000. `list` also accepts explicit title, author, or series ordering; its
+default remains the existing recently-read-first, then title order. Missing books stay hidden unless
+`--missing` is supplied.
+
+`mg-bookr tui`'s Library tab also supports `/` to type a live filter, `Enter` to finish,
+`Esc` to clear, and `o` to cycle the sort order. `f` still cycles file kind and `s` still rescans.
+An empty TUI filter shows the full list; text entry stops at 200 characters, and Ctrl-C quits while
+searching. The TUI filter is an in-memory view over the same library records; it does not change
+stored data.
 
 ## What it knows
 
