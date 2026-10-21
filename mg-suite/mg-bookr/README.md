@@ -24,6 +24,7 @@ mg-bookr progress <id> <location> <percent> [--finished|--unfinished]
 mg-bookr highlight add <book> <location> <quote> [--chapter t] [--note n] [--color yellow]
 mg-bookr highlight list <book> | note <id> <text> | remove <id>
 mg-bookr collection list | show <name> | add <name> <book> | remove <name> <book>
+mg-bookr collection import <dir> [--subject <name>] [--dry-run]   # a folder of books → a list
 mg-bookr export <id>                       # rewrite the book's vault note
 mg-bookr listen play <id> [--at t:secs] [--speed 1.5]
 mg-bookr listen now | pause | resume | toggle | stop
@@ -45,6 +46,18 @@ default remains the existing recently-read-first, then title order. Missing book
 An empty TUI filter shows the full list; text entry stops at 200 characters, and Ctrl-C quits while
 searching. The TUI filter is an in-memory view over the same library records; it does not change
 stored data.
+
+`collection import <dir>` makes a folder of books — files, or symlinks to them — into a list
+named after the folder, in natural name order; re-running it only appends what is new. A book
+already under the books root is used as it is, and a byte-for-byte copy of one (same size and
+SHA-256) is swapped for a symlink to it. Anything else is new: it is filed as
+`texts/<Subject>/<last>-<first>[-et-al]-<year|undated>-<title>.<ext>` (named from its metadata)
+and the folder entry becomes a symlink to it. A real file is moved, while a linked file outside the
+folder is copied and left where it is. New books go to `--subject`, or else to the subject
+most of the list is already in. If that is not clear (no listed books are filed yet, or there is a
+tie), the command asks for `--subject`. An existing library name is never overwritten: that book
+is skipped with a reason, as are non-ebooks and broken links. `--dry-run` shows the plan and
+changes nothing; book metadata is not always right, so check new names with it first.
 
 ## What it knows
 

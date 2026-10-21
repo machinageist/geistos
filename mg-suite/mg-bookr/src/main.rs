@@ -14,7 +14,7 @@ use serde_json::json;
 
 use mg_bookr::store::{self, Book, BookSort, BookStatus, Store};
 use mg_bookr::terminal_text::sanitize_terminal_text;
-use mg_bookr::{listen, reader, scan, vault, watcher};
+use mg_bookr::{import, listen, reader, scan, vault, watcher};
 
 const DEFAULT_CONTINUE: usize = 12;
 
@@ -252,6 +252,17 @@ enum CollectionAction {
         name: String,
         book: i64,
         position: usize,
+    },
+    /// Make a folder of books (and symlinks to books) a list named after it; new books are
+    /// filed into ~/books/texts/<subject>/ under the library's naming and linked back
+    Import {
+        dir: std::path::PathBuf,
+        /// Subject folder for new books (default: where most of the list already is)
+        #[arg(long)]
+        subject: Option<String>,
+        /// Say what would happen and change nothing
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -563,6 +574,27 @@ fn run(cli: Cli) -> Result<()> {
                     format!("moved book {book} to position {position}"),
                 );
             }
+            CollectionAction::Import {
+                dir,
+                subject,
+                dry_run,
+            } => {
+                let report = import::import(
+                    &store,
+                    &scan::default_roots(),
+                    &scan::default_cover_dir(),
+                    &dir,
+                    subject.as_deref(),
+                    dry_run,
+                )?;
+                if json {
+                    let mut value = serde_json::to_value(&report)?;
+                    value["ok"] = json!(true);
+                    println!("{value}");
+                } else {
+                    imported(&report);
+                }
+            }
         },
         Command::Status { action } => match action {
             StatusAction::Get { book } => {
@@ -765,6 +797,48 @@ fn sync(store: &Store, book_id: i64) -> String {
     }
 }
 
+// What an import did, or would do on a dry run
+fn imported(report: &import::Report) {
+    for member in &report.books {
+        let what = match (member.action, report.dry_run) {
+            (import::Action::Shelved, _) => "in library",
+            (import::Action::Duplicate, false) => "linked",
+            (import::Action::Duplicate, true) => "would link",
+            (import::Action::Imported, false) => "imported",
+            (import::Action::Imported, true) => "would import",
+        };
+        println!(
+            "  {what:<12}  {}  \u{2192}  {}",
+            sanitize_terminal_text(&member.source),
+            sanitize_terminal_text(&member.path)
+        );
+    }
+    for skipped in &report.skipped {
+        println!(
+            "  {:<12}  {}: {}",
+            "skipped",
+            sanitize_terminal_text(&skipped.source),
+            sanitize_terminal_text(&skipped.reason)
+        );
+    }
+    let filed = report.subject.as_ref().map_or(String::new(), |subject| {
+        format!("; new books go to {}", sanitize_terminal_text(subject))
+    });
+    let list = sanitize_terminal_text(&report.list);
+    if report.dry_run {
+        println!(
+            "dry run: {list} would list {} books{filed}; nothing was changed",
+            report.books.len()
+        );
+    } else {
+        println!(
+            "{list}: {} books, {} newly listed{filed}",
+            report.books.len(),
+            report.added
+        );
+    }
+}
+
 // An action's answer: JSON, or one line
 fn done(json: bool, value: serde_json::Value, text: String) {
     if json {
@@ -902,6 +976,43 @@ mod tests {
         assert!(matches!(force.command, Command::Scan { force: true }));
         let watch = Cli::try_parse_from(["mg-bookr", "watch", "--debounce-ms", "250"]).unwrap();
         assert!(matches!(watch.command, Command::Watch { debounce_ms: 250 }));
+    }
+
+    #[test]
+    fn collection_import_takes_a_folder_a_subject_and_a_dry_run() {
+        let import = Cli::try_parse_from([
+            "mg-bookr",
+            "collection",
+            "import",
+            "/lists/ccna-weekly/",
+            "--subject",
+            "Networking, Cloud & DevOps",
+            "--dry-run",
+        ])
+        .unwrap();
+        assert!(matches!(
+            import.command,
+            Command::Collection {
+                action: CollectionAction::Import {
+                    dir,
+                    subject: Some(subject),
+                    dry_run: true
+                }
+            } if dir == std::path::Path::new("/lists/ccna-weekly")
+                && subject == "Networking, Cloud & DevOps"
+        ));
+        let plain =
+            Cli::try_parse_from(["mg-bookr", "collection", "import", "ccna-weekly"]).unwrap();
+        assert!(matches!(
+            plain.command,
+            Command::Collection {
+                action: CollectionAction::Import {
+                    subject: None,
+                    dry_run: false,
+                    ..
+                }
+            }
+        ));
     }
 
     #[test]

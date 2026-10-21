@@ -21,8 +21,8 @@ use crate::terminal_text::sanitize_terminal_text;
 
 pub const BOOKS: &str = "books";
 pub const AUDIOBOOKS: &str = "audiobooks";
-const MAX_DEPTH: usize = 8;
-const EBOOK_EXTENSIONS: [&str; 4] = ["epub", "pdf", "cbz", "cbr"];
+pub(crate) const MAX_DEPTH: usize = 8;
+pub(crate) const EBOOK_EXTENSIONS: [&str; 4] = ["epub", "pdf", "cbz", "cbr"];
 // single-file audiobooks; other audio files make their folder a book
 const BOOK_AUDIO: [&str; 2] = ["m4b", "m4a"];
 
@@ -312,7 +312,7 @@ fn cover_key(root: &str, rel: &str, path: &Path) -> String {
 }
 
 // Read one book's metadata by kind
-fn read(kind: &str, path: &Path) -> Result<Meta> {
+pub(crate) fn read(kind: &str, path: &Path) -> Result<Meta> {
     match kind {
         "epub" => meta::epub(path),
         "pdf" => meta::pdf(path),

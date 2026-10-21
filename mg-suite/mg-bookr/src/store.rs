@@ -619,6 +619,18 @@ impl Store {
             .with_context(|| format!("no book {id}"))
     }
 
+    // The present (not missing) book at a root and path, if there is one
+    pub fn book_at(&self, root: &str, path: &str) -> Result<Option<i64>> {
+        Ok(self
+            .conn()?
+            .query_row(
+                "SELECT id FROM books WHERE root=?1 AND path=?2 AND missing=0",
+                params![root, path],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     pub fn status(&self, id: i64) -> Result<BookStatus> {
         let status: Option<String> = self
             .conn()?
@@ -900,7 +912,7 @@ impl Store {
 
     // ── Collections ──
 
-    fn checked_collection_name(name: &str) -> Result<&str> {
+    pub(crate) fn checked_collection_name(name: &str) -> Result<&str> {
         let name = name.trim();
         if name.is_empty() || name.len() > 80 {
             bail!("a collection name is 1–80 characters")

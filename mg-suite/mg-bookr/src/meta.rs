@@ -30,6 +30,10 @@ pub const AUDIO_EXTENSIONS: [&str; 7] = ["mp3", "m4a", "m4b", "ogg", "opus", "fl
 pub struct Meta {
     pub title: Option<String>,
     pub author: Option<String>,
+    // each creator on its own (EPUB only); `author` is them joined
+    pub authors: Vec<String>,
+    // the year of the EPUB's dc:date, when it is a plausible one
+    pub year: Option<i32>,
     pub series: Option<String>,
     pub series_index: Option<f64>,
     pub pages: Option<i64>,
@@ -92,6 +96,13 @@ pub fn title_from_name(name: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+// The year a dc:date starts with: "2021-03-02T00:00:00Z" → 2021; calibre's "0101-01-01" → none
+fn year_of(date: &str) -> Option<i32> {
+    date.get(..4)
+        .and_then(|year| year.parse().ok())
+        .filter(|year| (1800..=2100).contains(year))
 }
 
 // One zip entry's bytes, refusing anything over `cap`
@@ -169,9 +180,12 @@ pub fn epub(path: &Path) -> Result<Meta> {
             .and_then(|n| n.attribute("content"))
             .map(str::to_string)
     };
+    let authors = text_of("creator");
     let mut meta = Meta {
         title: text_of("title").into_iter().next(),
-        author: Some(text_of("creator").join(", ")).filter(|a| !a.is_empty()),
+        author: Some(authors.join(", ")).filter(|a| !a.is_empty()),
+        authors,
+        year: text_of("date").first().and_then(|date| year_of(date)),
         series: meta_named("calibre:series"),
         series_index: meta_named("calibre:series_index").and_then(|v| v.parse().ok()),
         ..Default::default()
@@ -534,9 +548,15 @@ pub mod tests {
         } else {
             r#"<item id="cov" href="images/cover.jpg" media-type="image/jpeg"/>"#
         };
+        // a real date, and calibre's placeholder for none
+        let date = if epub3_series {
+            "1969-03-01"
+        } else {
+            "0101-01-01T00:00:00+00:00"
+        };
         let opf = format!(
             r#"<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>The Left Hand of
-            Darkness</dc:title><dc:creator>Ursula K. Le Guin</dc:creator>{series}</metadata><manifest>{cover_item}<item id="c1x" href="text/ch1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1x"/></spine></package>"#
+            Darkness</dc:title><dc:creator>Ursula K. Le Guin</dc:creator><dc:date>{date}</dc:date>{series}</metadata><manifest>{cover_item}<item id="c1x" href="text/ch1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1x"/></spine></package>"#
         );
         zip.start_file("OEBPS/content.opf", opts).unwrap();
         zip.write_all(opf.as_bytes()).unwrap();
@@ -577,6 +597,8 @@ pub mod tests {
                 "line breaks in the title collapse"
             );
             assert_eq!(m.author.as_deref(), Some("Ursula K. Le Guin"));
+            assert_eq!(m.authors, ["Ursula K. Le Guin"]);
+            assert_eq!(m.year, epub3.then_some(1969));
             assert_eq!(
                 (m.series.as_deref(), m.series_index),
                 (Some("Hainish Cycle"), Some(4.0))
