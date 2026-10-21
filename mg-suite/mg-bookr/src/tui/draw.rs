@@ -11,7 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph, Tabs};
 
 use super::state::{KIND_FILTERS, State, TABS, Tab};
-use crate::store::Book;
+use crate::store::{Book, BookRecord, CollectionSummary};
 
 const ACCENT: Color = Color::Magenta;
 const DIM: Color = Color::DarkGray;
@@ -64,6 +64,41 @@ pub fn draw(frame: &mut Frame, state: &State, now_ms: i64) {
             draw_list(frame, body, &title, rows, state.cursor())
         }
         Tab::Listening => draw_listening(frame, body, state, now_ms),
+        Tab::Lists => match &state.list {
+            Some(name) => draw_list(
+                frame,
+                body,
+                &format!(" list · {name} "),
+                state
+                    .list_books
+                    .iter()
+                    .enumerate()
+                    .map(|(at, record)| list_book_line(at + 1, record))
+                    .collect(),
+                state.cursor(),
+            ),
+            None if state.lists.is_empty() => frame.render_widget(
+                Paragraph::new(
+                    "no reading lists yet \u{b7} mg-bookr collection import <folder> makes one",
+                )
+                .fg(DIM),
+                body,
+            ),
+            None => {
+                let width = state
+                    .lists
+                    .iter()
+                    .map(|list| sanitize_terminal_text(&list.name).chars().count())
+                    .max()
+                    .unwrap_or(0);
+                let rows = state
+                    .lists
+                    .iter()
+                    .map(|list| summary_line(list, width))
+                    .collect();
+                draw_list(frame, body, " reading lists ", rows, state.cursor())
+            }
+        },
     }
     let keys = match state.tab {
         _ if state.message.is_some() => state.message.clone().unwrap_or_default(),
@@ -72,7 +107,11 @@ pub fn draw(frame: &mut Frame, state: &State, now_ms: i64) {
         }
         Tab::Listening => "space play/pause · ←/→ 15s · n/p chapter · [/] speed · z sleep · x stop · q quit".into(),
         Tab::Library => "enter play/read · f kind · o order · / search · s rescan · space play/pause · z sleep · q quit".into(),
-        Tab::Continue => "enter play/read · space play/pause · z sleep · tab/1-3 · q quit".into(),
+        Tab::Continue => "enter play/read · space play/pause · z sleep · tab/1-4 · q quit".into(),
+        Tab::Lists if state.list.is_some() => {
+            "enter play/read · esc back to lists · space play/pause · z sleep · q quit".into()
+        }
+        Tab::Lists => "enter open list · s rescan · tab/1-4 · q quit".into(),
     };
     frame.render_widget(
         Paragraph::new(sanitize_terminal_text(&keys)).fg(DIM),
@@ -109,6 +148,37 @@ fn book_line(book: &Book) -> Line<'static> {
     }
     spans.push(Span::styled(percent, Style::new().fg(DIM)));
     Line::from(spans)
+}
+
+// "ccna-weekly   6 books · 1 reading · 0 finished"
+fn summary_line(list: &CollectionSummary, width: usize) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(format!("{:<width$}", sanitize_terminal_text(&list.name))),
+        Span::styled(
+            format!(
+                "  {} books \u{b7} {} reading \u{b7} {} finished",
+                list.books, list.reading, list.finished
+            ),
+            Style::new().fg(DIM),
+        ),
+    ])
+}
+
+// "  3  reading   epub  Title — Author  12%": the book's place in the list and its status first
+fn list_book_line(place: usize, record: &BookRecord) -> Line<'static> {
+    let mut line = book_line(&record.book);
+    line.spans.insert(
+        0,
+        Span::styled(
+            format!("{place:>3}  {:<9}", record.status.as_str()),
+            Style::new().fg(DIM),
+        ),
+    );
+    if record.book.missing {
+        line.spans
+            .push(Span::styled("  missing", Style::new().fg(Color::Red)));
+    }
+    line
 }
 
 fn draw_list(frame: &mut Frame, area: Rect, title: &str, rows: Vec<Line<'static>>, cursor: usize) {
@@ -187,7 +257,7 @@ fn draw_listening(frame: &mut Frame, area: Rect, state: &State, now_ms: i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::state::tests::{book, now};
+    use crate::tui::state::tests::{book, now, record, summary};
 
     fn screen(state: &State, w: u16, h: u16) -> String {
         let mut t = ratatui::Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
@@ -225,6 +295,38 @@ mod tests {
         }
         s.message = Some("scanning…".into());
         assert!(screen(&s, 100, 12).contains("scanning"));
+    }
+
+    #[test]
+    fn the_lists_tab_shows_lists_then_a_lists_books_in_order() {
+        let mut empty = State {
+            tab: Tab::Lists,
+            ..Default::default()
+        };
+        assert!(screen(&empty, 100, 8).contains("no reading lists yet"));
+
+        let mut ccna = summary("ccna-weekly", 6);
+        ccna.reading = 1;
+        empty.lists = vec![summary("ai-tools", 5), ccna];
+        let lists = screen(&empty, 100, 8);
+        assert!(lists.contains("4 Lists") && lists.contains("reading lists"));
+        assert!(lists.contains("ccna-weekly  6 books · 1 reading · 0 finished"));
+        assert!(lists.contains("ai-tools     5 books"), "names line up");
+        assert!(lists.contains("enter open list"));
+
+        let mut reading = record(2, "pdf");
+        reading.status = crate::store::BookStatus::Reading;
+        let mut gone = record(3, "epub");
+        gone.book.missing = true;
+        empty.list = Some("ccna-weekly".into());
+        empty.list_books = vec![record(1, "epub"), reading, gone];
+        let books = screen(&empty, 100, 8);
+        assert!(books.contains("list · ccna-weekly"));
+        assert!(books.contains("  1  to-read  epub  Book 1"));
+        assert!(books.contains("  2  reading  pdf   Book 2"));
+        assert!(books.contains("Book 3  missing"));
+        assert!(books.contains("esc back to lists"));
+        screen(&empty, 12, 3);
     }
 
     fn terminal_active_control(c: char) -> bool {
@@ -277,11 +379,17 @@ mod tests {
             message: Some(hostile),
             ..Default::default()
         };
+        state.lists = vec![summary(&hostile_terminal_text(), 1)];
         let mut rendered = String::new();
         for tab in TABS {
             state.tab = tab;
             rendered.push_str(&screen(&state, 180, 12));
         }
+        let mut listed = record(1, "epub");
+        listed.book.title = hostile_terminal_text();
+        state.list = Some(hostile_terminal_text());
+        state.list_books = vec![listed];
+        rendered.push_str(&screen(&state, 180, 12));
         assert!(
             !rendered.chars().any(terminal_active_control),
             "TestBackend must not receive ESC, BEL, or another C0/C1 control"

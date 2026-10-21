@@ -25,12 +25,13 @@ mg-bookr highlight add <book> <location> <quote> [--chapter t] [--note n] [--col
 mg-bookr highlight list <book> | note <id> <text> | remove <id>
 mg-bookr collection list | show <name> | add <name> <book> | remove <name> <book>
 mg-bookr collection import <dir> [--subject <name>] [--dry-run]   # a folder of books → a list
+mg-bookr lists [<name> [open <n> | next]]  # reading lists, one in order, or a book from one
 mg-bookr export <id>                       # rewrite the book's vault note
 mg-bookr listen play <id> [--at t:secs] [--speed 1.5]
 mg-bookr listen now | pause | resume | toggle | stop
 mg-bookr listen seek 90|1:02:03|+30|-10    speed 0.75..3   chapter next|prev|<n>
 mg-bookr listen sleep 30|chapter|off
-mg-bookr tui                               # Continue, Library, Listening
+mg-bookr tui                               # Continue, Library, Listening, Lists
 ```
 
 `--json` works everywhere, and failures print `{"ok":false,"error":…}` with exit 1.
@@ -58,6 +59,13 @@ most of the list is already in. If that is not clear (no listed books are filed 
 tie), the command asks for `--subject`. An existing library name is never overwritten: that book
 is skipped with a reason, as are non-ebooks and broken links. `--dry-run` shows the plan and
 changes nothing; book metadata is not always right, so check new names with it first.
+
+`lists` is for reading from your lists; `collection …` stays the way to edit them. With no name it
+shows every list with how many of its books are reading and finished. With a name, it shows that
+list's books in list order, numbered from 1, with status and progress. `open <n>` opens the book at
+place `n`, and `next` opens the first one that is not finished and not missing. An audiobook starts
+playing, and anything else opens in the reader. The TUI's Lists tab (4) does the same: Enter
+opens a list, Enter on a book reads or plays it, and Esc goes back.
 
 ## What it knows
 

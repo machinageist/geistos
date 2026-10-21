@@ -173,6 +173,15 @@ pub struct BookRecord {
     pub status: BookStatus,
 }
 
+// A list and how far through it you are
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CollectionSummary {
+    pub name: String,
+    pub books: i64,
+    pub reading: i64,
+    pub finished: i64,
+}
+
 impl Book {
     pub fn matches_text(&self, query: &str) -> bool {
         let needle = query.trim().to_lowercase();
@@ -1179,6 +1188,33 @@ impl Store {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
+
+    // Each list with how far through it you are
+    pub fn collection_summaries(&self) -> Result<Vec<CollectionSummary>> {
+        let connection = self.conn()?;
+        let mut statement = connection.prepare(
+            "SELECT c.name, COUNT(b.id), COALESCE(SUM(b.status='reading'),0), COALESCE(SUM(b.status='finished'),0) \
+             FROM collections c LEFT JOIN collection_books cb ON cb.collection_id=c.id \
+             LEFT JOIN books b ON b.id=cb.book_id GROUP BY c.id ORDER BY c.name COLLATE NOCASE",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(CollectionSummary {
+                    name: row.get(0)?,
+                    books: row.get(1)?,
+                    reading: row.get(2)?,
+                    finished: row.get(3)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    // One list's books in its own order, with their statuses; an unknown list is an error
+    pub fn collection_records(&self, name: &str) -> Result<Vec<BookRecord>> {
+        self.collection_id(name)?;
+        self.records_for_books(&self.collection(name)?)
+    }
 }
 
 #[cfg(test)]
@@ -1680,6 +1716,58 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn list_summaries_count_statuses_and_records_keep_list_order() {
+        let (_dir, store) = store();
+        store
+            .save_scan(
+                &["books"],
+                &[
+                    found("books", "a.epub", "A"),
+                    found("books", "b.epub", "B"),
+                    found("books", "c.epub", "C"),
+                ],
+            )
+            .unwrap();
+        let ids = store
+            .books_sorted(None, false, BookSort::Title)
+            .unwrap()
+            .iter()
+            .map(|book| book.id)
+            .collect::<Vec<_>>();
+        store.create_collection("Networking").unwrap();
+        store.create_collection("empty").unwrap();
+        store
+            .add_many_to_collection("Networking", &[ids[2], ids[0], ids[1]])
+            .unwrap();
+        store.set_status(ids[0], BookStatus::Reading).unwrap();
+        store.set_status(ids[1], BookStatus::Finished).unwrap();
+
+        let summaries = store.collection_summaries().unwrap();
+        let counts = summaries
+            .iter()
+            .map(|s| (s.name.as_str(), s.books, s.reading, s.finished))
+            .collect::<Vec<_>>();
+        assert_eq!(counts, [("empty", 0, 0, 0), ("Networking", 3, 1, 1)]);
+
+        let records = store.collection_records("Networking").unwrap();
+        let order = records
+            .iter()
+            .map(|r| (r.book.id, r.status))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            [
+                (ids[2], BookStatus::ToRead),
+                (ids[0], BookStatus::Reading),
+                (ids[1], BookStatus::Finished)
+            ]
+        );
+        assert!(store.collection_records("empty").unwrap().is_empty());
+        let unknown = store.collection_records("nope").unwrap_err();
+        assert!(format!("{unknown:#}").contains("no collection nope"));
+    }
+
     #[test]
     fn database_storage_is_private_repairs_modes_and_rejects_symlinks() {
         use std::{

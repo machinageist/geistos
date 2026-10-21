@@ -8,11 +8,11 @@
 
 use std::process::ExitCode;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use serde_json::json;
 
-use mg_bookr::store::{self, Book, BookSort, BookStatus, Store};
+use mg_bookr::store::{self, Book, BookRecord, BookSort, BookStatus, Store};
 use mg_bookr::terminal_text::sanitize_terminal_text;
 use mg_bookr::{import, listen, reader, scan, vault, watcher};
 
@@ -97,6 +97,16 @@ enum Command {
         #[command(subcommand)]
         action: CollectionAction,
     },
+    /// Reading lists: all of them, one in order, or a book from one (open <n> or next)
+    Lists {
+        /// A list to show
+        name: Option<String>,
+        /// open <n>: the book at place n; next: the first one not finished
+        #[arg(value_enum)]
+        action: Option<ListMove>,
+        /// The book's place in the list, from 1
+        position: Option<usize>,
+    },
     /// Read or change global book status
     Status {
         #[command(subcommand)]
@@ -121,6 +131,14 @@ enum Command {
         #[command(subcommand)]
         action: ListenAction,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum ListMove {
+    /// The book at a place in the list
+    Open,
+    /// The first book in list order that is not finished
+    Next,
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -596,6 +614,70 @@ fn run(cli: Cli) -> Result<()> {
                 }
             }
         },
+        Command::Lists { name: None, .. } => {
+            let summaries = store.collection_summaries()?;
+            if json {
+                println!("{}", serde_json::to_string(&summaries)?);
+            } else {
+                let names = summaries
+                    .iter()
+                    .map(|summary| sanitize_terminal_text(&summary.name))
+                    .collect::<Vec<_>>();
+                let width = names.iter().map(|n| n.chars().count()).max().unwrap_or(0);
+                for (name, summary) in names.iter().zip(&summaries) {
+                    println!(
+                        "{name:<width$}  {} books \u{b7} {} reading \u{b7} {} finished",
+                        summary.books, summary.reading, summary.finished
+                    );
+                }
+            }
+        }
+        Command::Lists {
+            name: Some(name),
+            action: None,
+            ..
+        } => {
+            let records = store.collection_records(&name)?;
+            if json {
+                let numbered = records
+                    .iter()
+                    .enumerate()
+                    .map(|(at, record)| {
+                        let mut value = serde_json::to_value(record)?;
+                        value["position"] = json!(at + 1);
+                        Ok(value)
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                println!("{}", json!(numbered));
+            } else {
+                for (at, record) in records.iter().enumerate() {
+                    println!(
+                        "{:>3}  {:<8}  {}",
+                        at + 1,
+                        record.status.as_str(),
+                        line(&record.book)
+                    );
+                }
+            }
+        }
+        Command::Lists {
+            name: Some(name),
+            action: Some(how),
+            position,
+        } => {
+            let records = store.collection_records(&name)?;
+            let book = pick(&records, &name, how, position)?.book.clone();
+            if book.kind.starts_with("audio") {
+                let play = ListenAction::Play {
+                    id: book.id,
+                    at: None,
+                    speed: None,
+                };
+                listen_command(json, &store, play)?;
+            } else {
+                open_book(json, &store, book.id)?;
+            }
+        }
         Command::Status { action } => match action {
             StatusAction::Get { book } => {
                 let status = store.status(book)?;
@@ -648,16 +730,7 @@ fn run(cli: Cli) -> Result<()> {
                 format!("{path}: {what}"),
             );
         }
-        Command::Open { id } => {
-            let book = store.book(id)?;
-            reader::open(&book)?;
-            store.mark_opened(id)?;
-            done(
-                json,
-                json!({ "ok": true, "book": store.book_record(id)? }),
-                format!("opening {}", book.title),
-            );
-        }
+        Command::Open { id } => open_book(json, &store, id)?,
         Command::Mode { id, mode } => {
             if let Some(mode) = &mode {
                 store.set_mode(id, mode)?;
@@ -794,6 +867,43 @@ fn sync(store: &Store, book_id: i64) -> String {
     match result {
         Ok((path, _)) => format!("vault note {path} updated"),
         Err(e) => format!("vault note not written: {e:#}"),
+    }
+}
+
+// Open a book in the reader window and note that it was opened
+fn open_book(json: bool, store: &Store, id: i64) -> Result<()> {
+    let book = store.book(id)?;
+    reader::open(&book)?;
+    store.mark_opened(id)?;
+    done(
+        json,
+        json!({ "ok": true, "book": store.book_record(id)? }),
+        format!("opening {}", book.title),
+    );
+    Ok(())
+}
+
+// The book `lists <name> open <n>` or `lists <name> next` means
+fn pick<'a>(
+    records: &'a [BookRecord],
+    name: &str,
+    how: ListMove,
+    position: Option<usize>,
+) -> Result<&'a BookRecord> {
+    if records.is_empty() {
+        bail!("{name} has no books")
+    }
+    match (how, position) {
+        (ListMove::Open, Some(at)) => at
+            .checked_sub(1)
+            .and_then(|index| records.get(index))
+            .with_context(|| format!("{name}'s places are 1 to {}", records.len())),
+        (ListMove::Open, None) => bail!("open needs the book's place in the list, from 1"),
+        (ListMove::Next, None) => records
+            .iter()
+            .find(|record| record.status != BookStatus::Finished && !record.book.missing)
+            .with_context(|| format!("nothing in {name} is left to read")),
+        (ListMove::Next, Some(_)) => bail!("next takes no place; open <n> picks one"),
     }
 }
 
@@ -1013,6 +1123,92 @@ mod tests {
                 }
             }
         ));
+    }
+
+    #[test]
+    fn lists_takes_a_name_then_open_n_or_next() {
+        let lists = |args: &[&str]| {
+            let mut argv = vec!["mg-bookr", "lists"];
+            argv.extend(args);
+            match Cli::try_parse_from(argv).map(|cli| cli.command) {
+                Ok(Command::Lists {
+                    name,
+                    action,
+                    position,
+                }) => Ok((name, action, position)),
+                Ok(_) => panic!("not lists"),
+                Err(error) => Err(error.kind()),
+            }
+        };
+        assert_eq!(lists(&[]), Ok((None, None, None)));
+        assert_eq!(
+            lists(&["ccna-weekly"]),
+            Ok((Some("ccna-weekly".into()), None, None))
+        );
+        assert_eq!(
+            lists(&["ccna-weekly", "open", "3"]),
+            Ok((Some("ccna-weekly".into()), Some(ListMove::Open), Some(3)))
+        );
+        assert_eq!(
+            lists(&["ccna-weekly", "next"]),
+            Ok((Some("ccna-weekly".into()), Some(ListMove::Next), None))
+        );
+        assert!(lists(&["ccna-weekly", "read"]).is_err());
+    }
+
+    fn record(id: i64, status: BookStatus, missing: bool) -> BookRecord {
+        BookRecord {
+            book: Book {
+                id,
+                kind: "epub".into(),
+                root: "books".into(),
+                path: format!("{id}.epub"),
+                title: format!("Book {id}"),
+                author: None,
+                series: None,
+                series_index: None,
+                cover: None,
+                pages: None,
+                duration_seconds: None,
+                missing,
+                location: None,
+                percent: None,
+                finished: false,
+                updated_at: None,
+            },
+            status,
+        }
+    }
+
+    #[test]
+    fn open_picks_a_place_and_next_the_first_unfinished_present_book() {
+        let records = [
+            record(1, BookStatus::Finished, false),
+            record(2, BookStatus::ToRead, true),
+            record(3, BookStatus::Reading, false),
+            record(4, BookStatus::ToRead, false),
+        ];
+        let id = |how, at| pick(&records, "ccna", how, at).map(|r| r.book.id);
+        assert_eq!(id(ListMove::Open, Some(1)).unwrap(), 1);
+        assert_eq!(id(ListMove::Open, Some(4)).unwrap(), 4);
+        assert_eq!(
+            id(ListMove::Next, None).unwrap(),
+            3,
+            "finished and missing are passed"
+        );
+        for (how, at, said) in [
+            (ListMove::Open, Some(0), "ccna's places are 1 to 4"),
+            (ListMove::Open, Some(5), "ccna's places are 1 to 4"),
+            (ListMove::Open, None, "open needs the book's place"),
+            (ListMove::Next, Some(2), "next takes no place"),
+        ] {
+            assert!(format!("{:#}", id(how, at).unwrap_err()).contains(said));
+        }
+        let done = [record(1, BookStatus::Finished, false)];
+        let error = pick(&done, "ccna", ListMove::Next, None).unwrap_err();
+        assert!(format!("{error:#}").contains("nothing in ccna is left to read"));
+        let error = pick(&[], "ccna", ListMove::Next, None).unwrap_err();
+        assert!(format!("{error:#}").contains("ccna has no books"));
     }
 
     #[test]

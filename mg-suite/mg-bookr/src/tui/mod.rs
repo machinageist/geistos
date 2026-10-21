@@ -67,6 +67,7 @@ fn event_loop(
     let mut state = State {
         continuing: store.in_progress(CONTINUE_SHOWN)?,
         library: store.books_sorted(None, false, BookSort::Recent)?,
+        lists: store.collection_summaries()?,
         ..Default::default()
     };
     loop {
@@ -78,9 +79,10 @@ fn event_loop(
                 }
                 Update::Message(m) => {
                     state.message = Some(m);
-                    // a scan changes both lists
+                    // a scan changes what every tab shows
                     state.continuing = store.in_progress(CONTINUE_SHOWN)?;
                     state.library = store.books_sorted(None, false, state.sort)?;
+                    load_lists(&mut state, &store)?;
                     state.clamp();
                 }
             }
@@ -107,6 +109,22 @@ fn event_loop(
     }
 }
 
+// Fresh list counts, and the open list's books; a list deleted meanwhile closes and says so
+fn load_lists(state: &mut State, store: &Store) -> Result<()> {
+    state.lists = store.collection_summaries()?;
+    if let Some(name) = &state.list {
+        match store.collection_records(name) {
+            Ok(records) => state.list_books = records,
+            Err(error) => {
+                state.message = Some(format!("{error:#}"));
+                state.list = None;
+                state.list_books.clear();
+            }
+        }
+    }
+    Ok(())
+}
+
 // Carry out one effect
 fn apply(effect: Effect, state: &mut State, store: &Store, tx: &Sender<Update>) -> Result<()> {
     match effect {
@@ -115,6 +133,12 @@ fn apply(effect: Effect, state: &mut State, store: &Store, tx: &Sender<Update>) 
         Effect::LoadLibrary(sort) => {
             state.sort = sort;
             state.library = store.books_sorted(None, false, sort)?;
+        }
+        Effect::LoadLists => load_lists(state, store)?,
+        Effect::OpenList(name) => {
+            state.list_books = store.collection_records(&name)?;
+            state.list = Some(name);
+            state.book_cursor = 0;
         }
         Effect::Scan => {
             let tx = tx.clone();

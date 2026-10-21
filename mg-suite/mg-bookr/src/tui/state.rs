@@ -10,7 +10,7 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::listen::{MAX_SPEED, MIN_SPEED, Now};
-use crate::store::{Book, BookSort, MAX_BOOK_SEARCH_CHARS};
+use crate::store::{Book, BookRecord, BookSort, CollectionSummary, MAX_BOOK_SEARCH_CHARS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
@@ -18,9 +18,12 @@ pub enum Tab {
     Continue,
     Library,
     Listening,
+    // the reading lists, then one list's books
+    Lists,
 }
 
-pub const TABS: [Tab; 3] = [Tab::Continue, Tab::Library, Tab::Listening];
+// Lists comes last, so 1–3 keep the tabs they always had
+pub const TABS: [Tab; 4] = [Tab::Continue, Tab::Library, Tab::Listening, Tab::Lists];
 
 impl Tab {
     pub fn title(self) -> &'static str {
@@ -28,6 +31,7 @@ impl Tab {
             Tab::Continue => "Continue",
             Tab::Library => "Library",
             Tab::Listening => "Listening",
+            Tab::Lists => "Lists",
         }
     }
     fn index(self) -> usize {
@@ -58,6 +62,9 @@ pub enum Effect {
     Quit,
     LoadContinue,
     LoadLibrary(BookSort),
+    // fresh list counts, and the open list's books
+    LoadLists,
+    OpenList(String),
     Scan,
     Play(i64),
     Read(i64),
@@ -77,8 +84,13 @@ pub struct State {
     pub now: Option<Now>,
     // when `now` was read, unix ms
     pub now_at: i64,
-    pub cursor: [usize; 3],
+    pub cursor: [usize; 4],
     pub message: Option<String>,
+    pub lists: Vec<CollectionSummary>,
+    // the list being looked into, its books in list order, and the cursor among them
+    pub list: Option<String>,
+    pub list_books: Vec<BookRecord>,
+    pub book_cursor: usize,
 }
 
 // one arrow press moves this far, as audiobook apps do
@@ -118,16 +130,26 @@ impl State {
             .collect()
     }
 
+    // Looking at one list's books rather than the lists
+    fn in_list(&self) -> bool {
+        self.tab == Tab::Lists && self.list.is_some()
+    }
+
     fn rows(&self, tab: Tab) -> usize {
         match tab {
             Tab::Continue => self.continuing.len(),
             Tab::Library => self.shown().len(),
             Tab::Listening => 0,
+            Tab::Lists => self.lists.len(),
         }
     }
 
     pub fn cursor(&self) -> usize {
-        self.cursor[self.tab.index()]
+        if self.in_list() {
+            self.book_cursor
+        } else {
+            self.cursor[self.tab.index()]
+        }
     }
 
     // Keep each cursor inside its list after the list changed
@@ -137,11 +159,23 @@ impl State {
             let c = &mut self.cursor[tab.index()];
             *c = (*c).min(rows.saturating_sub(1));
         }
+        self.book_cursor = self
+            .book_cursor
+            .min(self.list_books.len().saturating_sub(1));
     }
 
     fn step(&mut self, delta: isize) {
-        let last = self.rows(self.tab).saturating_sub(1) as isize;
-        let c = &mut self.cursor[self.tab.index()];
+        let rows = if self.in_list() {
+            self.list_books.len()
+        } else {
+            self.rows(self.tab)
+        };
+        let last = rows.saturating_sub(1) as isize;
+        let c = if self.in_list() {
+            &mut self.book_cursor
+        } else {
+            &mut self.cursor[self.tab.index()]
+        };
         *c = (*c as isize + delta).clamp(0, last.max(0)) as usize;
     }
 
@@ -151,6 +185,7 @@ impl State {
             Tab::Continue => Effect::LoadContinue,
             Tab::Library => Effect::LoadLibrary(self.sort),
             Tab::Listening => Effect::None,
+            Tab::Lists => Effect::LoadLists,
         }
     }
 
@@ -160,6 +195,11 @@ impl State {
             Tab::Continue => self.continuing.get(self.cursor()),
             Tab::Library => self.shown().get(self.cursor()).copied(),
             Tab::Listening => None,
+            Tab::Lists => self
+                .list
+                .as_ref()
+                .and_then(|_| self.list_books.get(self.book_cursor))
+                .map(|record| &record.book),
         }
     }
 
@@ -223,7 +263,7 @@ impl State {
             KeyCode::BackTab => {
                 return self.switch(TABS[(self.tab.index() + TABS.len() - 1) % TABS.len()]);
             }
-            KeyCode::Char(c @ '1'..='3') => return self.switch(TABS[c as usize - '1' as usize]),
+            KeyCode::Char(c @ '1'..='4') => return self.switch(TABS[c as usize - '1' as usize]),
             // listening works on every tab
             KeyCode::Char(' ') => return listen(Control::Toggle),
             KeyCode::Left => return listen(Control::Seek(SEEK_BACK)),
@@ -262,6 +302,17 @@ impl State {
             KeyCode::Char('f') if self.tab == Tab::Library => {
                 self.kind = (self.kind + 1) % KIND_FILTERS.len();
                 self.cursor[Tab::Library.index()] = 0;
+            }
+            KeyCode::Enter if self.tab == Tab::Lists && self.list.is_none() => {
+                if let Some(list) = self.lists.get(self.cursor()) {
+                    return Effect::OpenList(list.name.clone());
+                }
+            }
+            KeyCode::Esc | KeyCode::Backspace if self.in_list() => {
+                self.list = None;
+                self.list_books.clear();
+                self.book_cursor = 0;
+                return Effect::LoadLists;
             }
             KeyCode::Enter => {
                 if let Some(book) = self.selected() {
@@ -446,6 +497,57 @@ pub mod tests {
         assert_eq!(s.key(key(KeyCode::Char('s'))), Effect::Scan);
     }
 
+    pub fn summary(name: &str, books: i64) -> CollectionSummary {
+        CollectionSummary {
+            name: name.into(),
+            books,
+            reading: 0,
+            finished: 0,
+        }
+    }
+
+    pub fn record(id: i64, kind: &str) -> BookRecord {
+        BookRecord {
+            book: book(id, kind),
+            status: crate::store::BookStatus::ToRead,
+        }
+    }
+
+    #[test]
+    fn lists_open_into_their_books_and_escape_goes_back() {
+        let mut s = State {
+            lists: vec![summary("ai-tools", 2), summary("ccna-weekly", 3)],
+            ..Default::default()
+        };
+        assert_eq!(s.key(key(KeyCode::Char('4'))), Effect::LoadLists);
+        assert_eq!(s.key(key(KeyCode::Esc)), Effect::None, "no list is open");
+        s.key(key(KeyCode::Down));
+        assert_eq!(
+            s.key(key(KeyCode::Enter)),
+            Effect::OpenList("ccna-weekly".into())
+        );
+
+        // what the loop does with OpenList
+        s.list = Some("ccna-weekly".into());
+        s.list_books = vec![record(5, "epub"), record(6, "audio"), record(7, "pdf")];
+        assert_eq!(s.cursor(), 0, "books have their own cursor");
+        s.key(key(KeyCode::Down));
+        assert_eq!(s.key(key(KeyCode::Enter)), Effect::Play(6));
+        s.key(key(KeyCode::Char('G')));
+        assert_eq!(s.key(key(KeyCode::Enter)), Effect::Read(7));
+        s.key(key(KeyCode::Down));
+        assert_eq!(s.cursor(), 2, "the cursor stops at the last book");
+
+        assert_eq!(s.key(key(KeyCode::Backspace)), Effect::LoadLists);
+        assert_eq!(s.list, None);
+        assert!(s.list_books.is_empty());
+        assert_eq!(s.cursor(), 1, "back on the list it came from");
+
+        s.lists.truncate(1);
+        s.clamp();
+        assert_eq!(s.cursor(), 0, "a list that went away pulls the cursor in");
+    }
+
     #[test]
     fn speed_steps_by_a_quarter_inside_its_range() {
         let mut s = State::default();
@@ -495,7 +597,14 @@ pub mod tests {
         );
         assert_eq!(s.key(key(KeyCode::Tab)), Effect::None);
         assert_eq!(s.tab, Tab::Listening);
+        assert_eq!(s.key(key(KeyCode::Tab)), Effect::LoadLists);
         assert_eq!(s.key(key(KeyCode::Tab)), Effect::LoadContinue);
+        assert_eq!(s.key(key(KeyCode::BackTab)), Effect::LoadLists);
+        assert_eq!(
+            s.key(key(KeyCode::Char('3'))),
+            Effect::None,
+            "3 is still Listening"
+        );
         assert_eq!(
             s.key(key(KeyCode::Char(' '))),
             Effect::Listen(Control::Toggle)
